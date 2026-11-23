@@ -31,9 +31,10 @@ CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 FLATPAK_ENV = {**os.environ, "FLATPAK_FANCY_OUTPUT": "0"}
 SCOPES = ("--user", "--system")
 LIST_COLS = ("ref", "application", "name", "version", "branch", "arch", "origin",
-             "installation", "description")
+             "installation", "description", "size")
 REMOTE_COLS = ("ref", "application", "name", "version", "branch", "arch", "origin",
-               "description")
+               "description", "installed-size")
+SIZE_UNITS = {"bytes": 1, "byte": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
 MODES = ["All", "Installed", "Not installed", "Applications", "Runtimes", "Upgradable"]
 
 
@@ -56,6 +57,14 @@ def parse_rows(out, ncols):
         if len(parts) == ncols and "." in parts[1]:
             rows.append(parts)
     return rows
+
+
+def size_bytes(text):
+    num, _, unit = text.replace("\xa0", " ").partition(" ")
+    try:
+        return float(num.replace(",", ".")) * SIZE_UNITS.get(unit.strip(), 0)
+    except ValueError:
+        return 0
 
 
 def list_installed():
@@ -89,7 +98,7 @@ def _kind(ref):
 
 
 def collect_raw(cached=True):
-    """[[kind, id, name, version, branch, arch, origin, scope, summary, installed(0/1/2)]]
+    """[[kind, id, name, version, branch, arch, origin, scope, summary, installed(0/1/2), size]]
     sorted by name. Installed refs come from `flatpak list`, the rest from `remote-ls`."""
     with ThreadPoolExecutor(max_workers=5) as ex:  # the calls are independent
         f_inst = ex.submit(list_installed)
@@ -99,14 +108,14 @@ def collect_raw(cached=True):
         inst, avail = f_inst.result(), f_user.result() + f_sys.result()
         upd = {s: f.result() for s, f in f_upd.items()}
     pk = {}
-    for ref, i, n, v, b, a, o, sc, s in inst:
+    for ref, i, n, v, b, a, o, sc, s, sz in inst:
         flag = 2 if (i, a, b) in upd.get(sc, ()) else 1  # 2: installed, update pending
-        pk[(i, a, b, sc)] = [_kind(ref), i, n, v, b, a, o, sc, s, flag]
+        pk[(i, a, b, sc)] = [_kind(ref), i, n, v, b, a, o, sc, s, flag, sz]
     have = {k[:3] for k in pk}
-    for ref, i, n, v, b, a, o, s in avail:
+    for ref, i, n, v, b, a, o, s, sz in avail:
         if (i, a, b) not in have:  # first remote wins; installed refs already listed
             have.add((i, a, b))
-            pk[(i, a, b, "")] = [_kind(ref), i, n, v, b, a, o, "", s, 0]
+            pk[(i, a, b, "")] = [_kind(ref), i, n, v, b, a, o, "", s, 0, sz]
     if not pk:
         raise RuntimeError("flatpak returned no packages (no remotes configured?)")
     return sorted(pk.values(), key=lambda d: ((d[2] or d[1]).lower(), d[1], d[4], d[7]))
@@ -116,7 +125,7 @@ def read_cache():
     try:
         with open(CACHE_FILE) as f:
             data = json.load(f)
-        return data if isinstance(data, list) and data else None
+        return data if isinstance(data, list) and data and len(data[0]) == 11 else None
     except Exception:
         return None
 
@@ -140,7 +149,8 @@ class Pkg(GObject.Object):
     def __init__(self, d):
         super().__init__()
         (self.kind, self.id, name, self.version, self.branch, self.arch, self.origin,
-         self.scope, self.summary, inst) = d
+         self.scope, self.summary, inst, self.size) = d
+        self.size_bytes = size_bytes(self.size)
         self.name = name or self.id
         self.installed = bool(inst)
         self.upgradable = inst == 2
@@ -351,6 +361,7 @@ class Win(Adw.ApplicationWindow):
         name_col = self.add_col("Name", "name", width=230)
         self.add_col("Application ID", "id", width=280)
         self.add_col("Version", "version", width=120)
+        self.add_col("Size", "size", width=90)
         self.add_col("Branch", "branch", width=90)
         self.add_col("Origin", "origin", width=100)
         self.add_col("Scope", "scope", width=80)
@@ -486,6 +497,9 @@ class Win(Adw.ApplicationWindow):
         self.refilter()
 
     def sort_all(self):
+        if self.sort_prop == "size":
+            self.all.sort(key=lambda p: p.size_bytes, reverse=self.sort_desc)
+            return
         get = operator.attrgetter(self.sort_prop)
         self.all.sort(key=lambda p: get(p).casefold(), reverse=self.sort_desc)
 
