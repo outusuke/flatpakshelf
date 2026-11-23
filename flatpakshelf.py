@@ -14,7 +14,9 @@ Everything goes through the flatpak CLI.
 import json
 import operator
 import os
+import shutil
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,7 +26,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
-APP_ID = "org.example.Flatpakshelf"
+APP_ID = "io.github.outusuke.Flatpakshelf"
 CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")
@@ -817,6 +819,42 @@ class Win(Adw.ApplicationWindow):
         return False
 
 
+BIN_PATH = os.path.expanduser("~/.local/bin/flatpakshelf")
+DESKTOP_PATH = os.path.join(GLib.get_user_data_dir(), "applications", f"{APP_ID}.desktop")
+DESKTOP_ENTRY = f"""[Desktop Entry]
+Type=Application
+Name=Flatpakshelf
+Comment=Synaptic-style Flatpak manager
+Exec={BIN_PATH}
+Icon=system-software-install
+Terminal=false
+Categories=System;PackageManager;GTK;
+StartupWMClass={APP_ID}
+"""
+
+
+def install_self():
+    os.makedirs(os.path.dirname(BIN_PATH), exist_ok=True)
+    os.makedirs(os.path.dirname(DESKTOP_PATH), exist_ok=True)
+    try:
+        shutil.copyfile(os.path.abspath(__file__), BIN_PATH)
+    except shutil.SameFileError:
+        pass
+    os.chmod(BIN_PATH, 0o755)
+    with open(DESKTOP_PATH, "w") as f:
+        f.write(DESKTOP_ENTRY)
+    print(f"Installed {BIN_PATH} and {DESKTOP_PATH}")
+
+
+def uninstall_self():
+    for path in (BIN_PATH, DESKTOP_PATH):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+    print("Removed menu entry and binary")
+
+
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID)
@@ -828,4 +866,9 @@ class App(Adw.Application):
 
 
 if __name__ == "__main__":
-    App().run(None)
+    if "--install" in sys.argv[1:]:
+        install_self()
+    elif "--uninstall" in sys.argv[1:]:
+        uninstall_self()
+    else:
+        App().run(None)
