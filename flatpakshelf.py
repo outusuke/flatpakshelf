@@ -86,7 +86,7 @@ def user_data_sizes(found):
         if num.isdigit():
             found[os.path.basename(path)] = int(num)
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=8) as ex:
         list(ex.map(one, dirs))
 
 
@@ -375,6 +375,7 @@ class Win(Adw.ApplicationWindow):
         self.n_upg = 0
         self.data_sizes = {}
         self.scan_id = 0
+        self.scanning = False
 
         hb = Adw.HeaderBar()
         self.mode = Gtk.DropDown.new_from_strings(MODES)
@@ -509,6 +510,10 @@ class Win(Adw.ApplicationWindow):
 
     def scan_data(self):
         self.scan_id += 1
+        self.scanning = True
+        if self.all:
+            self.apply_data()
+            self.refilter()
         sid, found, done = self.scan_id, {}, threading.Event()
 
         def work():
@@ -528,13 +533,16 @@ class Win(Adw.ApplicationWindow):
     def apply_data(self):
         for p in self.all:
             p.data_bytes = self.data_sizes.get(p.id, 0) if p.installed else 0
-            p.data = GLib.format_size(p.data_bytes) if p.data_bytes else ""
+            pending = self.scanning and p.installed and p.kind == "app" and p.id not in self.data_sizes
+            p.data = GLib.format_size(p.data_bytes) if p.data_bytes else "…" if pending else ""
 
     def _data_ready(self, sid, found, final):
         if sid != self.scan_id:
             return False
         sizes = dict(found) if final else {**self.data_sizes, **found}
-        if sizes != self.data_sizes:
+        if final:
+            self.scanning = False
+        if final or sizes != self.data_sizes:
             self.data_sizes = sizes
             self.apply_data()
             self.sort_all()
@@ -610,7 +618,9 @@ class Win(Adw.ApplicationWindow):
             rows = list(rows)
         self.model.set_rows(rows)
         text = plural(len(rows))
-        self.count.set_text(f"{text}, {self.n_upg} upgradable" if self.n_upg else text)
+        if self.n_upg:
+            text += f", {self.n_upg} upgradable"
+        self.count.set_text(text + ", measuring user data…" if self.scanning else text)
 
     def on_search(self, entry):
         self.query = entry.get_text().strip().lower()
