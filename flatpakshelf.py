@@ -27,6 +27,7 @@ from gi.repository import Adw, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 APP_ID = "org.example.Flatpakshelf"
 CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
+DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")
 # Plain tab-separated output, no headers or fancy formatting.
 FLATPAK_ENV = {**os.environ, "FLATPAK_FANCY_OUTPUT": "0"}
 SCOPES = ("--user", "--system")
@@ -67,25 +68,44 @@ def size_bytes(text):
         return 0
 
 
-def user_data_sizes():
-    """{app id: bytes} for every folder in ~/.var/app."""
+def user_data_sizes(found):
+    """Fill `found` with {app id: bytes} for each folder in ~/.var/app, as each is measured."""
     root = os.path.expanduser("~/.var/app")
     try:
         dirs = [e.path for e in os.scandir(root) if e.is_dir()]
     except OSError:
-        return {}
-    if not dirs:
-        return {}
-    try:
-        r = subprocess.run(["du", "-sb", "--", *dirs], capture_output=True, text=True)
-    except OSError:
-        return {}
-    sizes = {}
-    for line in r.stdout.splitlines():  # du exits non-zero on unreadable files but still reports
-        num, _, path = line.partition("\t")
+        return
+
+    def one(path):
+        try:
+            out = subprocess.run(["du", "-sb", "--", path], capture_output=True,
+                                 text=True).stdout
+        except OSError:
+            return
+        num = out.partition("\t")[0]  # du exits non-zero on unreadable files but still reports
         if num.isdigit():
-            sizes[os.path.basename(path)] = int(num)
-    return sizes
+            found[os.path.basename(path)] = int(num)
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(one, dirs))
+
+
+def read_data_cache():
+    try:
+        with open(DATA_CACHE) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_data_cache(sizes):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        with open(DATA_CACHE, "w") as f:
+            json.dump(sizes, f)
+    except OSError:
+        pass
 
 
 def list_installed():
@@ -346,6 +366,7 @@ class Win(Adw.ApplicationWindow):
         self.busy = False      # an install/uninstall is running
         self.n_upg = 0
         self.data_sizes = {}
+        self.scan_id = 0
 
         hb = Adw.HeaderBar()
         self.mode = Gtk.DropDown.new_from_strings(MODES)
@@ -456,6 +477,7 @@ class Win(Adw.ApplicationWindow):
     # ---- loading
     def start(self):
         """Show the cached list immediately, then refresh it in the background."""
+        self.data_sizes = read_data_cache()
         self._begin(True)
 
     def reload(self):
@@ -464,28 +486,46 @@ class Win(Adw.ApplicationWindow):
     def _begin(self, first, quick=False):
         """quick: re-read local metadata only, without showing the cached list first."""
         self.gen += 1
-        self.scan_data()
+        if not quick:
+            self.scan_data()
         self.spin.start()
         threading.Thread(target=self._worker, args=(self.gen, first, quick),
                          daemon=True).start()
 
     def scan_data(self):
+        self.scan_id += 1
+        sid, found, done = self.scan_id, {}, threading.Event()
+
         def work():
-            GLib.idle_add(self._data_ready, user_data_sizes())
+            user_data_sizes(found)
+            done.set()
+            GLib.idle_add(self._data_ready, sid, found, True)
+
+        def poll():  # show partial results while the slow folders are still being measured
+            if sid != self.scan_id or done.is_set():
+                return False
+            self._data_ready(sid, found, False)
+            return True
 
         threading.Thread(target=work, daemon=True).start()
+        GLib.timeout_add_seconds(2, poll)
 
     def apply_data(self):
         for p in self.all:
             p.data_bytes = self.data_sizes.get(p.id, 0) if p.installed else 0
             p.data = GLib.format_size(p.data_bytes) if p.data_bytes else ""
 
-    def _data_ready(self, sizes):
+    def _data_ready(self, sid, found, final):
+        if sid != self.scan_id:
+            return False
+        sizes = dict(found) if final else {**self.data_sizes, **found}
         if sizes != self.data_sizes:
             self.data_sizes = sizes
             self.apply_data()
             self.sort_all()
             self.refilter()
+        if final:
+            write_data_cache(sizes)
         return False
 
     def spin_off(self):
