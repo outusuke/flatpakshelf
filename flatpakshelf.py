@@ -324,6 +324,12 @@ class Win(Adw.ApplicationWindow):
         hb.pack_start(self.reload_btn)
         self.spin = Gtk.Spinner()
         hb.pack_start(self.spin)
+        menu = Gio.Menu()
+        menu.append("Remove unused runtimes", "win.remove-unused")
+        hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
+        act = Gio.SimpleAction.new("remove-unused", None)
+        act.connect("activate", lambda *_: self.remove_unused())
+        self.add_action(act)
         self.btn_remove = Gtk.Button(label="Uninstall", sensitive=False,
                                      tooltip_text="Uninstall the selected installed packages")
         self.btn_remove.add_css_class("destructive-action")
@@ -619,6 +625,27 @@ class Win(Adw.ApplicationWindow):
             if resp == "remove":
                 self.run_batch(uninstall_commands(pkgs, check.get_active()),
                                f"Uninstalled {plural(len(pkgs))}")
+
+        dlg.connect("response", done)
+        dlg.present(self)
+
+    def remove_unused(self):
+        if self.busy:
+            return
+        dlg = Adw.AlertDialog(
+            heading="Remove unused runtimes?",
+            body="Removes runtimes and extensions no installed app needs, "
+                 "in both the user and system installations.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("remove", "Remove")
+        dlg.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def done(_d, resp):
+            if resp == "remove":
+                cmds = [["uninstall", "--unused", "--noninteractive", "-y", s] for s in SCOPES]
+                self.run_batch(cmds, "Cleaned up unused runtimes")
 
         dlg.connect("response", done)
         dlg.present(self)
