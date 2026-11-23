@@ -390,6 +390,12 @@ def detail_text(p, idx):
     return text.strip() or TAB_EMPTY[idx]
 
 
+def parse_unused(out):
+    """[(id, branch)] from the table `flatpak uninstall --unused --assumeno` prints."""
+    return [m.groups() for line in out.splitlines()
+            if (m := re.match(r"\s*\d+\.\s+(\S+\.\S+)\s+(\S+)", line))]
+
+
 def flatpak_op(*args):
     """(returncode, message) of one flatpak call that changes something."""
     try:
@@ -1005,10 +1011,29 @@ class Win(Adw.ApplicationWindow):
     def remove_unused(self):
         if self.busy:
             return
-        dlg = Adw.AlertDialog(
-            heading="Remove unused runtimes?",
-            body="Removes runtimes and extensions no installed app needs, "
-                 "in both the user and system installations.")
+        self.spin.start()
+
+        def work():
+            found = []
+            for s in SCOPES:
+                _rc, out = flatpak("uninstall", "--unused", "--assumeno", s)
+                found += [(i, b, s[2:]) for i, b in parse_unused(out)]
+            GLib.idle_add(self.confirm_unused, found)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def confirm_unused(self, found):
+        self.spin_off()
+        sizes = {(p.id, p.branch, p.scope): p.size_bytes for p in self.all if p.installed}
+        lines = [f"• {i} {b}" for i, b, _s in found[:12]]
+        if len(found) > 12:
+            lines.append(f"…and {len(found) - 12} more")
+        total = sum(sizes.get(f, 0) for f in found)
+        body = "Removes runtimes and extensions no installed app needs, " \
+               "in both the user and system installations."
+        if found:
+            body = f"{len(found)} items, about {GLib.format_size(total)}:\n" + "\n".join(lines)
+        dlg = Adw.AlertDialog(heading="Remove unused runtimes?", body=body)
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("remove", "Remove")
         dlg.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
