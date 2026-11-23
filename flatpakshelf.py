@@ -45,11 +45,11 @@ MODES = ["All", "Installed", "Not installed", "Applications", "Runtimes", "Upgra
 
 
 # ---------------------------------------------------------------- data layer
-def flatpak(*args):
+def flatpak(*args, answer=None):
     """(returncode, stdout) of one flatpak call; (1, "") if flatpak is missing."""
     try:
         r = subprocess.run(["flatpak", *args], capture_output=True, text=True,
-                           env=FLATPAK_ENV)
+                           env=FLATPAK_ENV, input=answer)
     except OSError:
         return 1, ""
     return r.returncode, r.stdout
@@ -1016,7 +1016,7 @@ class Win(Adw.ApplicationWindow):
         def work():
             found = []
             for s in SCOPES:
-                _rc, out = flatpak("uninstall", "--unused", "--assumeno", s)
+                _rc, out = flatpak("uninstall", "--unused", s, answer="n\n")
                 found += [(i, b, s[2:]) for i, b in parse_unused(out)]
             GLib.idle_add(self.confirm_unused, found)
 
@@ -1024,15 +1024,15 @@ class Win(Adw.ApplicationWindow):
 
     def confirm_unused(self, found):
         self.spin_off()
+        if not found:
+            self.toast("Nothing unused to remove")
+            return
         sizes = {(p.id, p.branch, p.scope): p.size_bytes for p in self.all if p.installed}
         lines = [f"• {i} {b}" for i, b, _s in found[:12]]
         if len(found) > 12:
             lines.append(f"…and {len(found) - 12} more")
         total = sum(sizes.get(f, 0) for f in found)
-        body = "Removes runtimes and extensions no installed app needs, " \
-               "in both the user and system installations."
-        if found:
-            body = f"{len(found)} items, about {GLib.format_size(total)}:\n" + "\n".join(lines)
+        body = f"{len(found)} items, about {GLib.format_size(total)}:\n" + "\n".join(lines)
         dlg = Adw.AlertDialog(heading="Remove unused runtimes?", body=body)
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("remove", "Remove")
