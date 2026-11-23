@@ -67,6 +67,27 @@ def size_bytes(text):
         return 0
 
 
+def user_data_sizes():
+    """{app id: bytes} for every folder in ~/.var/app."""
+    root = os.path.expanduser("~/.var/app")
+    try:
+        dirs = [e.path for e in os.scandir(root) if e.is_dir()]
+    except OSError:
+        return {}
+    if not dirs:
+        return {}
+    try:
+        r = subprocess.run(["du", "-sb", "--", *dirs], capture_output=True, text=True)
+    except OSError:
+        return {}
+    sizes = {}
+    for line in r.stdout.splitlines():  # du exits non-zero on unreadable files but still reports
+        num, _, path = line.partition("\t")
+        if num.isdigit():
+            sizes[os.path.basename(path)] = int(num)
+    return sizes
+
+
 def list_installed():
     _rc, out = flatpak("list", "--columns=" + ",".join(LIST_COLS))
     return parse_rows(out, len(LIST_COLS))
@@ -151,6 +172,7 @@ class Pkg(GObject.Object):
         (self.kind, self.id, name, self.version, self.branch, self.arch, self.origin,
          self.scope, self.summary, inst, self.size) = d
         self.size_bytes = size_bytes(self.size)
+        self.data, self.data_bytes = "", 0
         self.name = name or self.id
         self.installed = bool(inst)
         self.upgradable = inst == 2
@@ -323,6 +345,7 @@ class Win(Adw.ApplicationWindow):
         self.detail_cache = {}
         self.busy = False      # an install/uninstall is running
         self.n_upg = 0
+        self.data_sizes = {}
 
         hb = Adw.HeaderBar()
         self.mode = Gtk.DropDown.new_from_strings(MODES)
@@ -362,6 +385,7 @@ class Win(Adw.ApplicationWindow):
         self.add_col("Application ID", "id", width=280)
         self.add_col("Version", "version", width=120)
         self.add_col("Size", "size", width=90)
+        self.add_col("User data", "data", width=100)
         self.add_col("Branch", "branch", width=90)
         self.add_col("Origin", "origin", width=100)
         self.add_col("Scope", "scope", width=80)
@@ -440,9 +464,29 @@ class Win(Adw.ApplicationWindow):
     def _begin(self, first, quick=False):
         """quick: re-read local metadata only, without showing the cached list first."""
         self.gen += 1
+        self.scan_data()
         self.spin.start()
         threading.Thread(target=self._worker, args=(self.gen, first, quick),
                          daemon=True).start()
+
+    def scan_data(self):
+        def work():
+            GLib.idle_add(self._data_ready, user_data_sizes())
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def apply_data(self):
+        for p in self.all:
+            p.data_bytes = self.data_sizes.get(p.id, 0) if p.installed else 0
+            p.data = GLib.format_size(p.data_bytes) if p.data_bytes else ""
+
+    def _data_ready(self, sizes):
+        if sizes != self.data_sizes:
+            self.data_sizes = sizes
+            self.apply_data()
+            self.sort_all()
+            self.refilter()
+        return False
 
     def spin_off(self):
         if not self.busy:  # an install/uninstall keeps the spinner running
@@ -472,6 +516,7 @@ class Win(Adw.ApplicationWindow):
             return False
         self.all = objs
         self.n_upg = sum(p.upgradable for p in objs)
+        self.apply_data()
         self.sort_all()
         self.refilter()
         self.update_buttons(self.selected())
@@ -497,8 +542,9 @@ class Win(Adw.ApplicationWindow):
         self.refilter()
 
     def sort_all(self):
-        if self.sort_prop == "size":
-            self.all.sort(key=lambda p: p.size_bytes, reverse=self.sort_desc)
+        num = {"size": "size_bytes", "data": "data_bytes"}.get(self.sort_prop)
+        if num:
+            self.all.sort(key=operator.attrgetter(num), reverse=self.sort_desc)
             return
         get = operator.attrgetter(self.sort_prop)
         self.all.sort(key=lambda p: get(p).casefold(), reverse=self.sort_desc)
