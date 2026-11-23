@@ -5,7 +5,7 @@ A Synaptic-style Flatpak manager. GTK4, libadwaita, Everything goes through the 
 ## Run
 
 ```
-python3 flatshelf.py
+python3 flatpakshelf.py
 ```
 
 Requires `python3-gobject`, GTK 4, libadwaita 1.5+ and `flatpak`.
