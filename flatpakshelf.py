@@ -14,6 +14,7 @@ Everything goes through the flatpak CLI.
 import json
 import operator
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -228,6 +229,74 @@ def permissions_from_metadata(text):
     return "\n".join(out)
 
 
+PERM_GROUPS = {"shared": "Shared with the host", "sockets": "Sockets", "devices": "Devices",
+               "features": "Features", "filesystems": "Files", "persistent": "Persistent folders",
+               "unset-environment": "Unset variables"}
+PERM_LABELS = {
+    "network": "Network", "ipc": "Inter-process communication",
+    "x11": "X11 windowing system", "fallback-x11": "X11 (only if no Wayland)",
+    "wayland": "Wayland windowing system", "pulseaudio": "Sound",
+    "session-bus": "Full session bus access", "system-bus": "Full system bus access",
+    "ssh-auth": "SSH agent", "pcsc": "Smart cards", "cups": "Printing",
+    "gpg-agent": "GPG agent", "dri": "GPU acceleration", "all": "All devices",
+    "kvm": "Virtualization (KVM)", "shm": "Shared memory", "input": "Input devices",
+    "usb": "USB devices", "bluetooth": "Bluetooth", "devel": "Debugging (ptrace)",
+    "multiarch": "32-bit code", "canbus": "CAN bus", "host": "All files",
+    "host-os": "Host system files", "host-etc": "Host /etc", "home": "Home folder",
+}
+PERM_RISKY = {"x11", "session-bus", "system-bus", "ssh-auth", "all", "devel", "usb",
+              "host", "host-os", "host-etc", "home"}
+BUS_POLICY = {"talk": "Can talk to", "own": "Owns the name", "see": "Can see", "none": "Blocked"}
+FS_MODES = {"ro": "Read only", "rw": "Read and write", "create": "Read and write, created if missing"}
+INFO_LINE = re.compile(r"^\s*([A-Za-z][A-Za-z ]*?):\s*(.*)$")
+
+
+def parse_info(text):
+    """Split `flatpak info` output into (title, [(key, value)]); None if it isn't that shape."""
+    lines = text.splitlines()
+    title = ""
+    if len(lines) > 1 and lines[0].strip() and not lines[1].strip():
+        title, lines = lines[0].strip(), lines[2:]
+    rows = [m.groups() for m in map(INFO_LINE.match, lines) if m]
+    return (title, rows) if len(rows) >= 2 else None
+
+
+def perm_item(key, item):
+    """(title, subtitle, risky) for one entry of a Context permission list."""
+    if key != "filesystems":
+        return PERM_LABELS.get(item, item), "", item in PERM_RISKY and not item.startswith("!")
+    denied = item.startswith("!")
+    base, _, mode = item.lstrip("!").partition(":")
+    title = PERM_LABELS.get(base)
+    if title is None:
+        title = base[4:].replace("-", " ").capitalize() + " folder" if base.startswith("xdg-") else base
+    if denied:
+        return title, "Denied", False
+    return title, FS_MODES.get(mode, "Read and write"), base in PERM_RISKY and mode != "ro"
+
+
+def parse_permissions(text):
+    """[(group title, [(title, subtitle, risky)])] from a permissions keyfile, else None."""
+    groups, section = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif section and "=" in line:
+            key, _, val = line.partition("=")
+            if section == "Context":
+                title = PERM_GROUPS.get(key, key.capitalize())
+                rows = [perm_item(key, i) for i in val.split(";") if i]
+            elif section.endswith("Bus Policy"):
+                title = section.replace(" Policy", "")
+                rows = [(key, BUS_POLICY.get(val, val), val == "own")]
+            else:
+                title = "Environment variables" if section == "Environment" else section
+                rows = [(key, val, False)]
+            groups.setdefault(title, []).extend(rows)
+    return [g for g in groups.items() if g[1]] or None
+
+
 def detail_text(p, idx):
     """Text for one tab of the details pane (0 info, 1 permissions, 2 metadata)."""
     if p.installed:
@@ -436,9 +505,13 @@ class Win(Adw.ApplicationWindow):
 
         self.tab_views = []
         self.notebook = Gtk.Notebook(vexpand=True)
-        for title in TABS:
-            tv = Gtk.TextView(editable=False, monospace=True, left_margin=8, top_margin=8,
-                              wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        for idx, title in enumerate(TABS):
+            if idx < 2:  # Info and Permissions are shown as native rows
+                tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
+                             margin_bottom=12, margin_start=12, margin_end=12)
+            else:
+                tv = Gtk.TextView(editable=False, monospace=True, left_margin=8, top_margin=8,
+                                  wrap_mode=Gtk.WrapMode.WORD_CHAR)
             self.tab_views.append(tv)
             self.notebook.append_page(
                 Gtk.ScrolledWindow(vexpand=True, min_content_height=170, child=tv),
@@ -657,8 +730,8 @@ class Win(Adw.ApplicationWindow):
             self.info_timer = 0
         self.cur = sel[0] if sel else None
         if self.cur is None:
-            for tv in self.tab_views:
-                tv.get_buffer().set_text("Select a package to see its details.")
+            for i in range(len(TABS)):
+                self.show_tab(i, "Select a package to see its details.")
             return
         # Debounce: holding an arrow key would otherwise spawn one flatpak process per row.
         self.info_timer = GLib.timeout_add(250, self._start_info, self.cur, self.info_token)
@@ -675,11 +748,10 @@ class Win(Adw.ApplicationWindow):
 
     def load_tab(self, p, token, idx):
         key = (p.ref, p.scope, p.origin, p.installed, idx)
-        buf = self.tab_views[idx].get_buffer()
         if key in self.detail_cache:
-            buf.set_text(self.detail_cache[key])
+            self.show_tab(idx, self.detail_cache[key])
             return
-        buf.set_text("Loading…")
+        self.show_tab(idx, "Loading…")
 
         def work():
             try:
@@ -695,8 +767,49 @@ class Win(Adw.ApplicationWindow):
             self.detail_cache.clear()
         self.detail_cache[key] = text
         if token == self.info_token:
-            self.tab_views[idx].get_buffer().set_text(text)
+            self.show_tab(idx, text)
         return False
+
+    @staticmethod
+    def detail_row(title, sub="", warn=False, prop=False):
+        row = Adw.ActionRow(title=title, subtitle=sub, use_markup=False, title_lines=0,
+                            subtitle_lines=0, subtitle_selectable=True)
+        if prop:  # small dimmed key above a larger value
+            row.add_css_class("property")
+        if warn:
+            icon = Gtk.Image(icon_name="dialog-warning-symbolic", tooltip_text="Broad access")
+            icon.add_css_class("warning")
+            row.add_suffix(icon)
+        return row
+
+    def show_tab(self, idx, text):
+        view = self.tab_views[idx]
+        if idx == 2:
+            view.get_buffer().set_text(text)
+            return
+        while child := view.get_first_child():
+            view.remove(child)
+        parsed = (parse_info, parse_permissions)[idx](text)
+        if parsed is None:  # status message such as "Loading…" or "No special permissions"
+            note = Gtk.Label(label=text, wrap=True, xalign=0, selectable=True)
+            note.add_css_class("dim-label")
+            view.append(note)
+        elif idx == 0:
+            title, rows = parsed
+            if title:
+                head = Gtk.Label(label=title, wrap=True, xalign=0, selectable=True)
+                head.add_css_class("title-4")
+                view.append(head)
+            group = Adw.PreferencesGroup()
+            for key, value in rows:
+                group.add(self.detail_row(key, value, prop=True))
+            view.append(group)
+        else:
+            for title, rows in parsed:
+                group = Adw.PreferencesGroup(title=title)
+                for t, sub, warn in rows:
+                    group.add(self.detail_row(t, sub, warn))
+                view.append(group)
 
     # ---- install / uninstall
     def install_selected(self):
