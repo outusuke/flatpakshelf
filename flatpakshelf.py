@@ -130,9 +130,13 @@ def list_remote(scope, cached):
 
 def list_updates(scope):
     """(id, arch, branch) of every installed ref in one scope that has an update."""
-    args = ["remote-ls", scope, "--updates", "--columns=ref,application,branch,arch,origin"]
-    _rc, out = flatpak(*args)
-    return {(i, a, b) for _ref, i, b, a, _o in parse_rows(out, 5)}
+    _rc, names = flatpak("remotes", scope, "--columns=name")
+    found = set()
+    for remote in names.split():  # one broken remote makes remote-ls fail for the whole scope
+        _rc, out = flatpak("remote-ls", scope, remote, "--updates",
+                           "--columns=ref,application,branch,arch,origin")
+        found |= {(i, a, b) for _ref, i, b, a, _o in parse_rows(out, 5)}
+    return found
 
 
 def _kind(ref):
