@@ -312,6 +312,7 @@ class Win(Adw.ApplicationWindow):
         self.info_timer = 0
         self.detail_cache = {}
         self.busy = False      # an install/uninstall is running
+        self.n_upg = 0
 
         hb = Adw.HeaderBar()
         self.mode = Gtk.DropDown.new_from_strings(MODES)
@@ -453,8 +454,10 @@ class Win(Adw.ApplicationWindow):
         if gen != self.gen:
             return False
         self.all = objs
+        self.n_upg = sum(p.upgradable for p in objs)
         self.sort_all()
         self.refilter()
+        self.update_buttons(self.selected())
         if final:
             self.detail_cache.clear()
             self.spin_off()
@@ -485,7 +488,8 @@ class Win(Adw.ApplicationWindow):
         if rows is self.all:
             rows = list(rows)
         self.model.set_rows(rows)
-        self.count.set_text(f"{len(rows)} packages")
+        text = plural(len(rows))
+        self.count.set_text(f"{text}, {self.n_upg} upgradable" if self.n_upg else text)
 
     def on_search(self, entry):
         self.query = entry.get_text().strip().lower()
@@ -500,7 +504,9 @@ class Win(Adw.ApplicationWindow):
     def update_buttons(self, sel):
         self.btn_install.set_sensitive(not self.busy and any(not p.installed for p in sel))
         self.btn_remove.set_sensitive(not self.busy and any(p.installed for p in sel))
-        self.btn_update.set_sensitive(not self.busy and any(p.upgradable for p in sel))
+        picked = any(p.upgradable for p in sel)
+        self.btn_update.set_label("Update" if picked or not self.n_upg else "Update all")
+        self.btn_update.set_sensitive(not self.busy and (picked or self.n_upg > 0))
 
     def set_busy(self, busy):
         self.busy = busy
@@ -618,7 +624,8 @@ class Win(Adw.ApplicationWindow):
         dlg.present(self)
 
     def update_selected(self):
-        pkgs = [p for p in self.selected() if p.upgradable]
+        pkgs = [p for p in self.selected() if p.upgradable] or \
+               [p for p in self.all if p.upgradable]
         if pkgs:
             self.run_batch(update_commands(pkgs), f"Updated {plural(len(pkgs))}")
 
