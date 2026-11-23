@@ -248,6 +248,9 @@ PERM_RISKY = {"x11", "session-bus", "system-bus", "ssh-auth", "all", "devel", "u
               "host", "host-os", "host-etc", "home"}
 BUS_POLICY = {"talk": "Can talk to", "own": "Owns the name", "see": "Can see", "none": "Blocked"}
 FS_MODES = {"ro": "Read only", "rw": "Read and write", "create": "Read and write, created if missing"}
+# Context keys that are plain on/off switches: (flag to grant, flag to revoke) for `flatpak override`
+PERM_FLAGS = {"shared": ("share", "unshare"), "sockets": ("socket", "nosocket"),
+              "devices": ("device", "nodevice"), "features": ("allow", "disallow")}
 OVERRIDES_MARK = "#overrides"  # separates the app's permissions from the user's overrides
 INFO_LINE = re.compile(r"^\s*([A-Za-z][A-Za-z ]*?):\s*(.*)$")
 
@@ -263,24 +266,25 @@ def parse_info(text):
 
 
 def perm_item(key, item):
-    """(title, subtitle, risky) for one entry of a Context permission list."""
+    """(title, subtitle, risky, switch) for one entry of a Context permission list; switch is
+    (key, name, granted) for entries that can be turned on or off, else None."""
     if key != "filesystems":
         base = item.lstrip("!")
-        if item.startswith("!"):
-            return PERM_LABELS.get(base, base), "Disabled", False
-        return PERM_LABELS.get(item, item), "", item in PERM_RISKY
+        granted = base == item
+        ctl = (key, base, granted) if key in PERM_FLAGS else None
+        return PERM_LABELS.get(base, base), "" if granted else "Disabled", granted and base in PERM_RISKY, ctl
     denied = item.startswith("!")
     base, _, mode = item.lstrip("!").partition(":")
     title = PERM_LABELS.get(base)
     if title is None:
         title = base[4:].replace("-", " ").capitalize() + " folder" if base.startswith("xdg-") else base
     if denied:
-        return title, "Denied", False
-    return title, FS_MODES.get(mode, "Read and write"), base in PERM_RISKY and mode != "ro"
+        return title, "Denied", False, None
+    return title, FS_MODES.get(mode, "Read and write"), base in PERM_RISKY and mode != "ro", None
 
 
 def parse_keyfile(text):
-    """{group title: [(title, subtitle, risky)]} from a permissions keyfile."""
+    """{group title: [(title, subtitle, risky, switch)]} from a permissions keyfile."""
     groups, section = {}, None
     for line in text.splitlines():
         line = line.strip()
@@ -293,16 +297,16 @@ def parse_keyfile(text):
                 rows = [perm_item(key, i) for i in val.split(";") if i]
             elif section.endswith("Bus Policy"):
                 title = section.replace(" Policy", "")
-                rows = [(key, BUS_POLICY.get(val, val), val == "own")]
+                rows = [(key, BUS_POLICY.get(val, val), val == "own", None)]
             else:
                 title = "Environment variables" if section == "Environment" else section
-                rows = [(key, val, False)]
+                rows = [(key, val, False, None)]
             groups.setdefault(title, []).extend(rows)
     return groups
 
 
 def parse_permissions(text):
-    """[(group title, [(title, subtitle, risky, overridden)])] from permissions text that may
+    """[(group title, [(title, subtitle, risky, switch, overridden)])] from permissions text that may
     end with the user's overrides after OVERRIDES_MARK; None if there is nothing to show."""
     base, _, over = text.partition(OVERRIDES_MARK)
     groups = {t: {r[0]: r + (False,) for r in rows} for t, rows in parse_keyfile(base).items()}
@@ -791,7 +795,7 @@ class Win(Adw.ApplicationWindow):
         return False
 
     @staticmethod
-    def detail_row(title, sub="", warn=False, prop=False, changed=False):
+    def detail_row(title, sub="", warn=False, prop=False, changed=False, switch=None, p=None):
         row = Adw.ActionRow(title=title, subtitle=sub, use_markup=False, title_lines=0,
                             subtitle_lines=0, subtitle_selectable=True)
         if prop:  # small dimmed key above a larger value
@@ -802,11 +806,49 @@ class Win(Adw.ApplicationWindow):
             tag.add_css_class("accent")
             tag.add_css_class("caption")
             row.add_suffix(tag)
+        if switch and p:
+            key, name, granted = switch
+            sw = Gtk.Switch(active=granted, valign=Gtk.Align.CENTER)
+            sw.connect("notify::active", lambda w, _p: self.set_permission(w, p, key, name))
+            row.add_suffix(sw)
         if warn:
             icon = Gtk.Image(icon_name="dialog-warning-symbolic", tooltip_text="Broad access")
             icon.add_css_class("warning")
             row.add_suffix(icon)
         return row
+
+    def set_permission(self, sw, p, key, name):
+        flag = PERM_FLAGS[key][0 if sw.get_active() else 1]
+        sw.set_sensitive(False)
+        self.run_override(p, f"--{flag}={name}")
+
+    def reset_overrides(self, p):
+        dlg = Adw.AlertDialog(heading="Reset permission changes?",
+                              body=f"Remove every permission change you made for {p.name}.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("reset", "Reset")
+        dlg.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "reset" and self.run_override(p, "--reset"))
+        dlg.present(self)
+
+    def run_override(self, p, flag):
+        def work():
+            rc, _out = flatpak("override", "--user", flag, p.id)
+            GLib.idle_add(self.override_done, p, rc)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def override_done(self, p, rc):
+        if rc:
+            self.toast("Could not change the permission")
+        for k in [k for k in self.detail_cache if k[0] == p.ref and k[4] == 1]:
+            del self.detail_cache[k]
+        if self.cur is not None and self.cur.ref == p.ref:  # reload so the rows match reality
+            self.info_token += 1
+            self.load_tab(p, self.info_token, 1)
+        return False
 
     def show_tab(self, idx, text):
         view = self.tab_views[idx]
@@ -816,6 +858,8 @@ class Win(Adw.ApplicationWindow):
         while child := view.get_first_child():
             view.remove(child)
         parsed = (parse_info, parse_permissions)[idx](text)
+        p = self.cur
+        editable = p if p and p.installed and p.kind == "app" else None
         if parsed is None:  # status message such as "Loading…" or "No special permissions"
             note = Gtk.Label(label=text, wrap=True, xalign=0, selectable=True)
             note.add_css_class("dim-label")
@@ -833,9 +877,14 @@ class Win(Adw.ApplicationWindow):
         else:
             for title, rows in parsed:
                 group = Adw.PreferencesGroup(title=title)
-                for t, sub, warn, changed in rows:
-                    group.add(self.detail_row(t, sub, warn, changed=changed))
+                for t, sub, warn, ctl, changed in rows:
+                    group.add(self.detail_row(t, sub, warn, changed=changed, switch=ctl, p=editable))
                 view.append(group)
+            if editable and any(r[4] for _t, rows in parsed for r in rows):
+                reset = Gtk.Button(label="Reset overrides", halign=Gtk.Align.START,
+                                   tooltip_text="Remove all your permission changes for this app")
+                reset.connect("clicked", lambda *_: self.reset_overrides(editable))
+                view.append(reset)
 
     # ---- install / uninstall
     def install_selected(self):
