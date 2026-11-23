@@ -248,6 +248,7 @@ PERM_RISKY = {"x11", "session-bus", "system-bus", "ssh-auth", "all", "devel", "u
               "host", "host-os", "host-etc", "home"}
 BUS_POLICY = {"talk": "Can talk to", "own": "Owns the name", "see": "Can see", "none": "Blocked"}
 FS_MODES = {"ro": "Read only", "rw": "Read and write", "create": "Read and write, created if missing"}
+OVERRIDES_MARK = "#overrides"  # separates the app's permissions from the user's overrides
 INFO_LINE = re.compile(r"^\s*([A-Za-z][A-Za-z ]*?):\s*(.*)$")
 
 
@@ -264,7 +265,10 @@ def parse_info(text):
 def perm_item(key, item):
     """(title, subtitle, risky) for one entry of a Context permission list."""
     if key != "filesystems":
-        return PERM_LABELS.get(item, item), "", item in PERM_RISKY and not item.startswith("!")
+        base = item.lstrip("!")
+        if item.startswith("!"):
+            return PERM_LABELS.get(base, base), "Disabled", False
+        return PERM_LABELS.get(item, item), "", item in PERM_RISKY
     denied = item.startswith("!")
     base, _, mode = item.lstrip("!").partition(":")
     title = PERM_LABELS.get(base)
@@ -275,8 +279,8 @@ def perm_item(key, item):
     return title, FS_MODES.get(mode, "Read and write"), base in PERM_RISKY and mode != "ro"
 
 
-def parse_permissions(text):
-    """[(group title, [(title, subtitle, risky)])] from a permissions keyfile, else None."""
+def parse_keyfile(text):
+    """{group title: [(title, subtitle, risky)]} from a permissions keyfile."""
     groups, section = {}, None
     for line in text.splitlines():
         line = line.strip()
@@ -294,7 +298,19 @@ def parse_permissions(text):
                 title = "Environment variables" if section == "Environment" else section
                 rows = [(key, val, False)]
             groups.setdefault(title, []).extend(rows)
-    return [g for g in groups.items() if g[1]] or None
+    return groups
+
+
+def parse_permissions(text):
+    """[(group title, [(title, subtitle, risky, overridden)])] from permissions text that may
+    end with the user's overrides after OVERRIDES_MARK; None if there is nothing to show."""
+    base, _, over = text.partition(OVERRIDES_MARK)
+    groups = {t: {r[0]: r + (False,) for r in rows} for t, rows in parse_keyfile(base).items()}
+    for title, rows in parse_keyfile(over).items():
+        merged = groups.setdefault(title, {})
+        for r in rows:  # an override replaces the app's own entry of the same name
+            merged[r[0]] = r + (True,)
+    return [(t, list(rows.values())) for t, rows in groups.items() if rows] or None
 
 
 def detail_text(p, idx):
@@ -303,6 +319,10 @@ def detail_text(p, idx):
         flags = ([], ["--show-permissions"], ["--show-metadata"])[idx]
         _rc, text = flatpak("info", *scope_args(p.scope), f"--arch={p.arch}", *flags,
                             p.id, p.branch)
+        if idx == 1:  # what the user changed, e.g. with Flatseal
+            _rc, over = flatpak("override", "--show", "--user", p.id)
+            if over.strip():
+                text = f"{text.strip()}\n{OVERRIDES_MARK}\n{over}"
     else:  # not installed: ask the remote (local metadata first, then the network)
         flags = [] if idx == 0 else ["--show-metadata"]
         text = ""
@@ -771,11 +791,17 @@ class Win(Adw.ApplicationWindow):
         return False
 
     @staticmethod
-    def detail_row(title, sub="", warn=False, prop=False):
+    def detail_row(title, sub="", warn=False, prop=False, changed=False):
         row = Adw.ActionRow(title=title, subtitle=sub, use_markup=False, title_lines=0,
                             subtitle_lines=0, subtitle_selectable=True)
         if prop:  # small dimmed key above a larger value
             row.add_css_class("property")
+        if changed:
+            tag = Gtk.Label(label="Overridden", valign=Gtk.Align.CENTER,
+                            tooltip_text="Changed by a user override")
+            tag.add_css_class("accent")
+            tag.add_css_class("caption")
+            row.add_suffix(tag)
         if warn:
             icon = Gtk.Image(icon_name="dialog-warning-symbolic", tooltip_text="Broad access")
             icon.add_css_class("warning")
@@ -807,8 +833,8 @@ class Win(Adw.ApplicationWindow):
         else:
             for title, rows in parsed:
                 group = Adw.PreferencesGroup(title=title)
-                for t, sub, warn in rows:
-                    group.add(self.detail_row(t, sub, warn))
+                for t, sub, warn, changed in rows:
+                    group.add(self.detail_row(t, sub, warn, changed=changed))
                 view.append(group)
 
     # ---- install / uninstall
