@@ -132,7 +132,52 @@ class Pkg(GObject.Object):
         self.name = name or self.id
         self.installed = bool(inst)
         self.status = "installed" if self.installed else ""
+        self.ref = f"{self.kind}/{self.id}/{self.arch}/{self.branch}"
         self.hay = f"{self.name} {self.id} {self.summary}".lower()
+
+
+TABS = ("Info", "Permissions", "Metadata")
+TAB_EMPTY = ("No information available.", "No special permissions declared.",
+             "No metadata available.")
+PERM_SECTIONS = ("Context", "Session Bus Policy", "System Bus Policy", "Environment")
+
+
+def scope_args(scope):
+    """flatpak scope option for an installation id from `flatpak list`."""
+    if scope in ("user", "system"):
+        return ["--" + scope]
+    return [f"--installation={scope}"] if scope else []
+
+
+def permissions_from_metadata(text):
+    """Keep only the sandbox permission groups of a metadata file."""
+    out, keep = [], False
+    for line in text.splitlines():
+        if line.startswith("["):
+            name = line.strip("[]")
+            keep = name in PERM_SECTIONS or name.startswith("Policy ")
+        if keep:
+            out.append(line)
+    return "\n".join(out)
+
+
+def detail_text(p, idx):
+    """Text for one tab of the details pane (0 info, 1 permissions, 2 metadata)."""
+    if p.installed:
+        flags = ([], ["--show-permissions"], ["--show-metadata"])[idx]
+        _rc, text = flatpak("info", *scope_args(p.scope), f"--arch={p.arch}", *flags,
+                            p.id, p.branch)
+    else:  # not installed: ask the remote (local metadata first, then the network)
+        flags = [] if idx == 0 else ["--show-metadata"]
+        text = ""
+        for extra in (["--cached"], []):
+            rc, out = flatpak("remote-info", *flags, *extra, p.origin, p.ref)
+            if rc == 0 and out.strip():
+                text = out
+                break
+        if idx == 1:
+            text = permissions_from_metadata(text)
+    return text.strip() or TAB_EMPTY[idx]
 
 
 def filter_rows(rows, mode, query):
@@ -184,6 +229,10 @@ class Win(Adw.ApplicationWindow):
         self.gen = 0           # load generation, so stale loads are ignored
         self.sort_prop, self.sort_desc = "name", False
         self.col_props = {}
+        self.cur = None        # package shown in the details pane
+        self.info_token = 0
+        self.info_timer = 0
+        self.detail_cache = {}
 
         hb = Adw.HeaderBar()
         self.mode = Gtk.DropDown.new_from_strings(MODES)
@@ -210,14 +259,30 @@ class Win(Adw.ApplicationWindow):
         self.add_col("Scope", "scope", width=80)
         self.add_col("Summary", "summary", expand=True)
         self.selection = Gtk.MultiSelection(model=self.model)
+        self.selection.connect("selection-changed", self.on_select)
         self.view.set_model(self.selection)
         # Header clicks only update the view's sorter; we sort our own list when it changes.
         self.view.get_sorter().connect("changed", self.on_sort_changed)
 
+        self.tab_views = []
+        self.notebook = Gtk.Notebook(vexpand=True)
+        for title in TABS:
+            tv = Gtk.TextView(editable=False, monospace=True, left_margin=8, top_margin=8,
+                              wrap_mode=Gtk.WrapMode.WORD_CHAR)
+            self.tab_views.append(tv)
+            self.notebook.append_page(
+                Gtk.ScrolledWindow(vexpand=True, min_content_height=170, child=tv),
+                Gtk.Label(label=title))
+        self.notebook.connect("switch-page", self.on_tab_switch)
+        paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, vexpand=True, position=440,
+                          start_child=Gtk.ScrolledWindow(vexpand=True, child=self.view),
+                          end_child=self.notebook, shrink_start_child=False,
+                          shrink_end_child=False)
+
         self.count = Gtk.Label(label="", xalign=1, margin_top=6, margin_bottom=6,
                                margin_start=12, margin_end=12)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        body.append(Gtk.ScrolledWindow(vexpand=True, child=self.view))
+        body.append(paned)
         body.append(self.count)
         tb = Adw.ToolbarView()
         tb.add_top_bar(hb)
@@ -292,6 +357,7 @@ class Win(Adw.ApplicationWindow):
         self.sort_all()
         self.refilter()
         if final:
+            self.detail_cache.clear()
             self.spin.stop()
         return False
 
@@ -325,6 +391,61 @@ class Win(Adw.ApplicationWindow):
     def on_search(self, entry):
         self.query = entry.get_text().strip().lower()
         self.refilter()
+
+    # ---- details pane
+    def selected(self):
+        bs = self.selection.get_selection()
+        rows = self.model.rows
+        return [rows[bs.get_nth(i)] for i in range(bs.get_size())]
+
+    def on_select(self, *_):
+        sel = self.selected()
+        self.info_token += 1
+        if self.info_timer:
+            GLib.source_remove(self.info_timer)
+            self.info_timer = 0
+        self.cur = sel[0] if sel else None
+        if self.cur is None:
+            for tv in self.tab_views:
+                tv.get_buffer().set_text("Select a package to see its details.")
+            return
+        # Debounce: holding an arrow key would otherwise spawn one flatpak process per row.
+        self.info_timer = GLib.timeout_add(250, self._start_info, self.cur, self.info_token)
+
+    def _start_info(self, p, token):
+        self.info_timer = 0
+        self.load_tab(p, token, self.notebook.get_current_page())
+        return False
+
+    def on_tab_switch(self, _nb, _page, num):
+        if self.cur is not None:
+            self.info_token += 1
+            self.load_tab(self.cur, self.info_token, num)
+
+    def load_tab(self, p, token, idx):
+        key = (p.ref, p.scope, p.origin, p.installed, idx)
+        buf = self.tab_views[idx].get_buffer()
+        if key in self.detail_cache:
+            buf.set_text(self.detail_cache[key])
+            return
+        buf.set_text("Loading…")
+
+        def work():
+            try:
+                text = detail_text(p, idx)
+            except Exception as e:
+                text = f"Error: {e}"
+            GLib.idle_add(self.set_detail, token, idx, key, text)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def set_detail(self, token, idx, key, text):
+        if len(self.detail_cache) > 400:
+            self.detail_cache.clear()
+        self.detail_cache[key] = text
+        if token == self.info_token:
+            self.tab_views[idx].get_buffer().set_text(text)
+        return False
 
 
 class App(Adw.Application):
