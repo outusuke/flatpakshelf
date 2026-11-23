@@ -327,16 +327,13 @@ class Win(Adw.ApplicationWindow):
                                      tooltip_text="Uninstall the selected installed packages")
         self.btn_remove.add_css_class("destructive-action")
         self.btn_remove.connect("clicked", lambda *_: self.uninstall_selected())
-        hb.pack_end(self.btn_remove)
         self.btn_install = Gtk.Button(label="Install", sensitive=False,
                                       tooltip_text="Install the selected packages")
         self.btn_install.add_css_class("suggested-action")
         self.btn_install.connect("clicked", lambda *_: self.install_selected())
-        hb.pack_end(self.btn_install)
         self.btn_update = Gtk.Button(label="Update", sensitive=False,
                                      tooltip_text="Update the selected packages")
         self.btn_update.connect("clicked", lambda *_: self.update_selected())
-        hb.pack_end(self.btn_update)
         self.search = Gtk.SearchEntry(placeholder_text="Search name, id or description",
                                       width_request=420)
         self.search.connect("search-changed", self.on_search)
@@ -372,11 +369,14 @@ class Win(Adw.ApplicationWindow):
                           end_child=self.notebook, shrink_start_child=False,
                           shrink_end_child=False)
 
-        self.count = Gtk.Label(label="", xalign=1, margin_top=6, margin_bottom=6,
-                               margin_start=12, margin_end=12)
+        self.count = Gtk.Label(label="", xalign=1, hexpand=True)
+        bar = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12,
+                      margin_end=12)
+        for w in (self.btn_install, self.btn_update, self.btn_remove, self.count):
+            bar.append(w)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body.append(paned)
-        body.append(self.count)
+        body.append(bar)
         tb = Adw.ToolbarView()
         tb.add_top_bar(hb)
         tb.set_content(body)
