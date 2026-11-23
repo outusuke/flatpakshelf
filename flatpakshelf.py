@@ -11,6 +11,7 @@ Run:
 
 Everything goes through the flatpak CLI.
 """
+import gzip
 import json
 import operator
 import os
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 
 import gi
@@ -206,9 +208,9 @@ class Pkg(GObject.Object):
         self.hay = f"{self.name} {self.id} {self.summary}".lower()
 
 
-TABS = ("Info", "Permissions", "Metadata")
+TABS = ("Info", "Permissions", "Metadata", "Changes")
 TAB_EMPTY = ("No information available.", "No special permissions declared.",
-             "No metadata available.")
+             "No metadata available.", "No update notes available.")
 PERM_SECTIONS = ("Context", "Session Bus Policy", "System Bus Policy", "Environment")
 
 
@@ -319,8 +321,54 @@ def parse_permissions(text):
     return [(t, list(rows.values())) for t, rows in groups.items() if rows] or None
 
 
+def appstream_files(p):
+    scopes = [p.scope] if p.installed else ["user", "system"]
+    roots = {"user": os.path.join(GLib.get_user_data_dir(), "flatpak"),
+             "system": "/var/lib/flatpak"}
+    return [os.path.join(roots.get(sc, roots["system"]), "appstream", p.origin, p.arch,
+                         "active", "appstream.xml.gz") for sc in scopes]
+
+
+def release_notes(p, limit=6):
+    """Release notes of an app from the AppStream data of its remote, newest first."""
+    for path in appstream_files(p):
+        try:
+            with gzip.open(path, "rb") as f:
+                for _ev, el in ET.iterparse(f):
+                    if el.tag != "component":
+                        continue
+                    cid = (el.findtext("id") or "").strip()
+                    if cid.removesuffix(".desktop") != p.id:
+                        el.clear()  # keeps memory flat on a catalog with thousands of apps
+                        continue
+                    blocks = []
+                    for rel in list(el.iterfind("releases/release"))[:limit]:
+                        head = f"{rel.get('version', '?')}  {rel.get('date', '')[:10]}".strip()
+                        lines = []
+                        for node in rel.iterfind("description//*"):
+                            text = " ".join("".join(node.itertext()).split())
+                            if node.tag == "li" and text:
+                                lines.append(f"  • {text}")
+                            elif node.tag == "p" and text:
+                                lines.append(f"  {text}")
+                        blocks.append("\n".join([head, *lines]))
+                    return "\n\n".join(blocks)
+        except (OSError, ET.ParseError, EOFError):
+            continue
+    return ""
+
+
+def commit_log(p):
+    scope = scope_args(p.scope) if p.installed else []
+    _rc, out = flatpak("remote-info", "--log", *scope, p.origin, p.ref)
+    return out
+
+
 def detail_text(p, idx):
-    """Text for one tab of the details pane (0 info, 1 permissions, 2 metadata)."""
+    """Text for one tab of the details pane (0 info, 1 permissions, 2 metadata, 3 changes)."""
+    if idx == 3:
+        text = release_notes(p) if p.kind == "app" else ""
+        return (text or commit_log(p)).strip() or TAB_EMPTY[idx]
     if p.installed:
         flags = ([], ["--show-permissions"], ["--show-metadata"])[idx]
         _rc, text = flatpak("info", *scope_args(p.scope), f"--arch={p.arch}", *flags,
@@ -859,7 +907,7 @@ class Win(Adw.ApplicationWindow):
 
     def show_tab(self, idx, text):
         view = self.tab_views[idx]
-        if idx == 2:
+        if idx >= 2:
             view.get_buffer().set_text(text)
             return
         while child := view.get_first_child():
