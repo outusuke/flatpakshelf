@@ -128,11 +128,9 @@ def list_remote(scope, cached):
     return parse_rows(out, len(REMOTE_COLS))
 
 
-def list_updates(scope, cached):
+def list_updates(scope):
     """(id, arch, branch) of every installed ref in one scope that has an update."""
     args = ["remote-ls", scope, "--updates", "--columns=ref,application,branch,arch,origin"]
-    if cached:
-        args.append("--cached")
     _rc, out = flatpak(*args)
     return {(i, a, b) for _ref, i, b, a, _o in parse_rows(out, 5)}
 
@@ -148,7 +146,7 @@ def collect_raw(cached=True):
         f_inst = ex.submit(list_installed)
         f_user = ex.submit(list_remote, SCOPES[0], cached)
         f_sys = ex.submit(list_remote, SCOPES[1], cached)
-        f_upd = {s[2:]: ex.submit(list_updates, s, cached) for s in SCOPES}
+        f_upd = {s[2:]: ex.submit(list_updates, s) for s in SCOPES}
         inst, avail = f_inst.result(), f_user.result() + f_sys.result()
         upd = {s: f.result() for s, f in f_upd.items()}
     pk = {}
