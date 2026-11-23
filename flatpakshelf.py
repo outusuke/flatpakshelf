@@ -484,9 +484,14 @@ class Win(Adw.ApplicationWindow):
         hb.pack_start(self.spin)
         menu = Gio.Menu()
         menu.append("Remove unused runtimes", "win.remove-unused")
+        self.app_menu = menu
+        menu.append(self.entry_label(), "win.toggle-menu-entry")
         hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         act = Gio.SimpleAction.new("remove-unused", None)
         act.connect("activate", lambda *_: self.remove_unused())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("toggle-menu-entry", None)
+        act.connect("activate", lambda *_: self.toggle_menu_entry())
         self.add_action(act)
         self.btn_remove = Gtk.Button(label="Uninstall", sensitive=False,
                                      tooltip_text="Uninstall the selected installed packages")
@@ -967,6 +972,21 @@ class Win(Adw.ApplicationWindow):
 
         dlg.connect("response", done)
         dlg.present(self)
+
+    @staticmethod
+    def entry_label():
+        return "Remove from app menu" if os.path.exists(DESKTOP_PATH) else "Add to app menu"
+
+    def toggle_menu_entry(self):
+        adding = not os.path.exists(DESKTOP_PATH)
+        try:
+            install_self() if adding else uninstall_self()
+        except OSError as e:
+            self.toast(f"Failed: {e}")
+            return
+        self.app_menu.remove(1)
+        self.app_menu.insert(1, self.entry_label(), "win.toggle-menu-entry")
+        self.toast("Added to the app menu" if adding else "Removed from the app menu")
 
     def update_selected(self):
         pkgs = [p for p in self.selected() if p.upgradable] or \
