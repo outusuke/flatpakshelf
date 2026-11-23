@@ -288,6 +288,14 @@ def update_commands(pkgs):
             for scope, refs in by_scope.items()]
 
 
+def launch_command(p):
+    return ["flatpak", "run", f"--branch={p.branch}", *scope_args(p.scope), p.id]
+
+
+def data_dir(p):
+    return os.path.expanduser(f"~/.var/app/{p.id}")
+
+
 def run_ops(cmds):
     """Run flatpak calls in order, stopping at the first failure: (ok, last message line)."""
     for args in cmds:
@@ -392,6 +400,12 @@ class Win(Adw.ApplicationWindow):
                                       tooltip_text="Install the selected packages")
         self.btn_install.add_css_class("suggested-action")
         self.btn_install.connect("clicked", lambda *_: self.install_selected())
+        self.btn_launch = Gtk.Button(label="Launch", sensitive=False,
+                                     tooltip_text="Run the selected application")
+        self.btn_launch.connect("clicked", lambda *_: self.launch_selected())
+        self.btn_folder = Gtk.Button(label="Data folder", sensitive=False,
+                                     tooltip_text="Open the selected app's folder in ~/.var/app")
+        self.btn_folder.connect("clicked", lambda *_: self.open_data_folder())
         self.btn_update = Gtk.Button(label="Update", sensitive=False,
                                      tooltip_text="Update the selected packages")
         self.btn_update.connect("clicked", lambda *_: self.update_selected())
@@ -435,7 +449,8 @@ class Win(Adw.ApplicationWindow):
         self.count = Gtk.Label(label="", xalign=1, hexpand=True)
         bar = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12,
                       margin_end=12)
-        for w in (self.btn_install, self.btn_update, self.btn_remove, self.count):
+        for w in (self.btn_install, self.btn_update, self.btn_launch, self.btn_folder,
+                  self.btn_remove, self.count):
             bar.append(w)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body.append(paned)
@@ -610,6 +625,9 @@ class Win(Adw.ApplicationWindow):
     def update_buttons(self, sel):
         self.btn_install.set_sensitive(not self.busy and any(not p.installed for p in sel))
         self.btn_remove.set_sensitive(not self.busy and any(p.installed for p in sel))
+        one = sel[0] if len(sel) == 1 else None
+        self.btn_launch.set_sensitive(bool(one and one.installed and one.kind == "app"))
+        self.btn_folder.set_sensitive(bool(one and one.installed and os.path.isdir(data_dir(one))))
         picked = any(p.upgradable for p in sel)
         self.btn_update.set_label("Update" if picked or not self.n_upg else "Update all")
         self.btn_update.set_sensitive(not self.busy and (picked or self.n_upg > 0))
@@ -755,6 +773,22 @@ class Win(Adw.ApplicationWindow):
                [p for p in self.all if p.upgradable]
         if pkgs:
             self.run_batch(update_commands(pkgs), f"Updated {plural(len(pkgs))}")
+
+    def launch_selected(self):
+        sel = self.selected()
+        if len(sel) != 1 or not sel[0].installed or sel[0].kind != "app":
+            return
+        try:
+            subprocess.Popen(launch_command(sel[0]), env=FLATPAK_ENV, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError as e:
+            self.toast(f"Could not launch: {e}")
+
+    def open_data_folder(self):
+        sel = self.selected()
+        if len(sel) == 1 and os.path.isdir(data_dir(sel[0])):
+            Gtk.FileLauncher.new(Gio.File.new_for_path(data_dir(sel[0]))).launch(self, None, None)
 
     def run_batch(self, cmds, ok_msg):
         self.set_busy(True)
