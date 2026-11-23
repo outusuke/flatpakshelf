@@ -34,7 +34,7 @@ LIST_COLS = ("ref", "application", "name", "version", "branch", "arch", "origin"
              "installation", "description")
 REMOTE_COLS = ("ref", "application", "name", "version", "branch", "arch", "origin",
                "description")
-MODES = ["All", "Installed", "Not installed", "Applications", "Runtimes"]
+MODES = ["All", "Installed", "Not installed", "Applications", "Runtimes", "Upgradable"]
 
 
 # ---------------------------------------------------------------- data layer
@@ -75,21 +75,33 @@ def list_remote(scope, cached):
     return parse_rows(out, len(REMOTE_COLS))
 
 
+def list_updates(scope, cached):
+    """(id, arch, branch) of every installed ref in one scope that has an update."""
+    args = ["remote-ls", scope, "--updates", "--columns=ref,application,branch,arch,origin"]
+    if cached:
+        args.append("--cached")
+    _rc, out = flatpak(*args)
+    return {(i, a, b) for _ref, i, b, a, _o in parse_rows(out, 5)}
+
+
 def _kind(ref):
     return "runtime" if ref.startswith("runtime/") else "app"
 
 
 def collect_raw(cached=True):
-    """[[kind, id, name, version, branch, arch, origin, scope, summary, installed(0/1)]]
+    """[[kind, id, name, version, branch, arch, origin, scope, summary, installed(0/1/2)]]
     sorted by name. Installed refs come from `flatpak list`, the rest from `remote-ls`."""
-    with ThreadPoolExecutor(max_workers=3) as ex:  # the three calls are independent
+    with ThreadPoolExecutor(max_workers=5) as ex:  # the calls are independent
         f_inst = ex.submit(list_installed)
         f_user = ex.submit(list_remote, SCOPES[0], cached)
         f_sys = ex.submit(list_remote, SCOPES[1], cached)
+        f_upd = {s[2:]: ex.submit(list_updates, s, cached) for s in SCOPES}
         inst, avail = f_inst.result(), f_user.result() + f_sys.result()
+        upd = {s: f.result() for s, f in f_upd.items()}
     pk = {}
     for ref, i, n, v, b, a, o, sc, s in inst:
-        pk[(i, a, b, sc)] = [_kind(ref), i, n, v, b, a, o, sc, s, 1]
+        flag = 2 if (i, a, b) in upd.get(sc, ()) else 1  # 2: installed, update pending
+        pk[(i, a, b, sc)] = [_kind(ref), i, n, v, b, a, o, sc, s, flag]
     have = {k[:3] for k in pk}
     for ref, i, n, v, b, a, o, s in avail:
         if (i, a, b) not in have:  # first remote wins; installed refs already listed
@@ -131,7 +143,8 @@ class Pkg(GObject.Object):
          self.scope, self.summary, inst) = d
         self.name = name or self.id
         self.installed = bool(inst)
-        self.status = "installed" if self.installed else ""
+        self.upgradable = inst == 2
+        self.status = "upgradable" if self.upgradable else "installed" if self.installed else ""
         self.ref = f"{self.kind}/{self.id}/{self.arch}/{self.branch}"
         self.hay = f"{self.name} {self.id} {self.summary}".lower()
 
@@ -180,6 +193,69 @@ def detail_text(p, idx):
     return text.strip() or TAB_EMPTY[idx]
 
 
+def flatpak_op(*args):
+    """(returncode, message) of one flatpak call that changes something."""
+    try:
+        r = subprocess.run(["flatpak", *args], capture_output=True, text=True,
+                           env=FLATPAK_ENV)
+    except OSError as e:
+        return 1, str(e)
+    return r.returncode, (r.stderr or r.stdout).strip()
+
+
+def remote_names(scope):
+    """Names of the enabled remotes of one installation ('user' or 'system')."""
+    _rc, out = flatpak("remotes", "--" + scope)
+    return {line.split("\t")[0].strip() for line in out.splitlines() if line.strip()}
+
+
+def install_commands(pkgs, scope):
+    """One `flatpak install` per origin remote."""
+    by_origin = {}
+    for p in pkgs:
+        by_origin.setdefault(p.origin, []).append(p.ref)
+    return [["install", "--noninteractive", "-y", "--" + scope, origin, *refs]
+            for origin, refs in by_origin.items()]
+
+
+def uninstall_commands(pkgs, delete_data):
+    """One `flatpak uninstall` per installation, so a ref present in both is unambiguous."""
+    by_scope = {}
+    for p in pkgs:
+        by_scope.setdefault(p.scope, []).append(p.ref)
+    extra = ["--delete-data"] if delete_data else []
+    return [["uninstall", "--noninteractive", "-y", *extra, *scope_args(scope), *refs]
+            for scope, refs in by_scope.items()]
+
+
+def update_commands(pkgs):
+    by_scope = {}
+    for p in pkgs:
+        by_scope.setdefault(p.scope, []).append(p.ref)
+    return [["update", "--noninteractive", "-y", *scope_args(scope), *refs]
+            for scope, refs in by_scope.items()]
+
+
+def run_ops(cmds):
+    """Run flatpak calls in order, stopping at the first failure: (ok, last message line)."""
+    for args in cmds:
+        rc, msg = flatpak_op(*args)
+        if rc:
+            lines = msg.splitlines()
+            return False, lines[-1] if lines else f"flatpak exited with {rc}"
+    return True, ""
+
+
+def names_summary(pkgs, limit=8):
+    names = [p.name for p in pkgs]
+    text = "\n".join(names[:limit])
+    return text + (f"\n… and {len(names) - limit} more" if len(names) > limit else "")
+
+
+def plural(n, word="package"):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
 def filter_rows(rows, mode, query):
     """Mode and search filter in plain Python. `query` must be lower case."""
     if mode == 1:
@@ -190,6 +266,8 @@ def filter_rows(rows, mode, query):
         rows = [p for p in rows if p.kind == "app"]
     elif mode == 4:
         rows = [p for p in rows if p.kind == "runtime"]
+    elif mode == 5:
+        rows = [p for p in rows if p.upgradable]
     if query:
         rows = [p for p in rows if query in p.hay]
     return rows
@@ -233,6 +311,7 @@ class Win(Adw.ApplicationWindow):
         self.info_token = 0
         self.info_timer = 0
         self.detail_cache = {}
+        self.busy = False      # an install/uninstall is running
 
         hb = Adw.HeaderBar()
         self.mode = Gtk.DropDown.new_from_strings(MODES)
@@ -244,6 +323,20 @@ class Win(Adw.ApplicationWindow):
         hb.pack_start(self.reload_btn)
         self.spin = Gtk.Spinner()
         hb.pack_start(self.spin)
+        self.btn_remove = Gtk.Button(label="Uninstall", sensitive=False,
+                                     tooltip_text="Uninstall the selected installed packages")
+        self.btn_remove.add_css_class("destructive-action")
+        self.btn_remove.connect("clicked", lambda *_: self.uninstall_selected())
+        hb.pack_end(self.btn_remove)
+        self.btn_install = Gtk.Button(label="Install", sensitive=False,
+                                      tooltip_text="Install the selected packages")
+        self.btn_install.add_css_class("suggested-action")
+        self.btn_install.connect("clicked", lambda *_: self.install_selected())
+        hb.pack_end(self.btn_install)
+        self.btn_update = Gtk.Button(label="Update", sensitive=False,
+                                     tooltip_text="Update the selected packages")
+        self.btn_update.connect("clicked", lambda *_: self.update_selected())
+        hb.pack_end(self.btn_update)
         self.search = Gtk.SearchEntry(placeholder_text="Search name, id or description",
                                       width_request=420)
         self.search.connect("search-changed", self.on_search)
@@ -326,17 +419,23 @@ class Win(Adw.ApplicationWindow):
     def reload(self):
         self._begin(False)
 
-    def _begin(self, first):
+    def _begin(self, first, quick=False):
+        """quick: re-read local metadata only, without showing the cached list first."""
         self.gen += 1
         self.spin.start()
-        threading.Thread(target=self._worker, args=(self.gen, first), daemon=True).start()
+        threading.Thread(target=self._worker, args=(self.gen, first, quick),
+                         daemon=True).start()
 
-    def _worker(self, gen, first):
+    def spin_off(self):
+        if not self.busy:  # an install/uninstall keeps the spinner running
+            self.spin.stop()
+
+    def _worker(self, gen, first, quick=False):
         try:
-            cached = read_cache() if first else None
-            if cached:
+            cached = read_cache() if first or quick else None
+            if cached and not quick:
                 GLib.idle_add(self._loaded, [Pkg(d) for d in cached], gen, False)
-            raw = collect_raw(cached=first)  # startup: local metadata; reload: network
+            raw = collect_raw(cached=first or quick)  # startup: local metadata; reload: network
             if cached is not None and raw == cached:
                 GLib.idle_add(self._unchanged, gen)  # nothing new: leave the list alone
                 return
@@ -347,7 +446,7 @@ class Win(Adw.ApplicationWindow):
 
     def _unchanged(self, gen):
         if gen == self.gen:
-            self.spin.stop()
+            self.spin_off()
         return False
 
     def _loaded(self, objs, gen, final):
@@ -358,12 +457,12 @@ class Win(Adw.ApplicationWindow):
         self.refilter()
         if final:
             self.detail_cache.clear()
-            self.spin.stop()
+            self.spin_off()
         return False
 
     def _load_failed(self, msg, gen):
         if gen == self.gen:
-            self.spin.stop()
+            self.spin_off()
             self.toast(f"Failed to load packages: {msg}")
         return False
 
@@ -398,8 +497,18 @@ class Win(Adw.ApplicationWindow):
         rows = self.model.rows
         return [rows[bs.get_nth(i)] for i in range(bs.get_size())]
 
+    def update_buttons(self, sel):
+        self.btn_install.set_sensitive(not self.busy and any(not p.installed for p in sel))
+        self.btn_remove.set_sensitive(not self.busy and any(p.installed for p in sel))
+        self.btn_update.set_sensitive(not self.busy and any(p.upgradable for p in sel))
+
+    def set_busy(self, busy):
+        self.busy = busy
+        self.update_buttons(self.selected())
+
     def on_select(self, *_):
         sel = self.selected()
+        self.update_buttons(sel)
         self.info_token += 1
         if self.info_timer:
             GLib.source_remove(self.info_timer)
@@ -445,6 +554,88 @@ class Win(Adw.ApplicationWindow):
         self.detail_cache[key] = text
         if token == self.info_token:
             self.tab_views[idx].get_buffer().set_text(text)
+        return False
+
+    # ---- install / uninstall
+    def install_selected(self):
+        pkgs = [p for p in self.selected() if not p.installed]
+        if not pkgs:
+            return
+
+        def work():  # which installations have these remotes? (two quick flatpak calls)
+            names = {s: remote_names(s) for s in ("user", "system")}
+            GLib.idle_add(self.ask_install, pkgs, names)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def ask_install(self, pkgs, names):
+        scopes = [s for s in ("user", "system") if all(p.origin in names[s] for p in pkgs)]
+        if not scopes:
+            self.toast("These packages come from remotes in different installations; "
+                       "select them separately.")
+            return False
+        labels = {"user": "For this user only", "system": "System-wide (asks for authorization)"}
+        drop = Gtk.DropDown.new_from_strings([labels[s] for s in scopes])
+        dlg = Adw.AlertDialog(heading=f"Install {plural(len(pkgs))}?",
+                              body=names_summary(pkgs))
+        if len(scopes) > 1:
+            dlg.set_extra_child(drop)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("install", "Install")
+        dlg.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("install")
+        dlg.set_close_response("cancel")
+
+        def done(_d, resp):
+            if resp == "install":
+                self.run_batch(install_commands(pkgs, scopes[drop.get_selected()]),
+                               f"Installed {plural(len(pkgs))}")
+
+        dlg.connect("response", done)
+        dlg.present(self)
+        return False
+
+    def uninstall_selected(self):
+        pkgs = [p for p in self.selected() if p.installed]
+        if not pkgs:
+            return
+        check = Gtk.CheckButton(label="Also delete app data (~/.var/app)")
+        dlg = Adw.AlertDialog(heading=f"Uninstall {plural(len(pkgs))}?",
+                              body=names_summary(pkgs) + "\n\nDeleted app data cannot be recovered.")
+        dlg.set_extra_child(check)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("remove", "Uninstall")
+        dlg.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def done(_d, resp):
+            if resp == "remove":
+                self.run_batch(uninstall_commands(pkgs, check.get_active()),
+                               f"Uninstalled {plural(len(pkgs))}")
+
+        dlg.connect("response", done)
+        dlg.present(self)
+
+    def update_selected(self):
+        pkgs = [p for p in self.selected() if p.upgradable]
+        if pkgs:
+            self.run_batch(update_commands(pkgs), f"Updated {plural(len(pkgs))}")
+
+    def run_batch(self, cmds, ok_msg):
+        self.set_busy(True)
+        self.spin.start()
+
+        def work():
+            ok, err = run_ops(cmds)
+            GLib.idle_add(self.batch_done, ok, err, ok_msg)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def batch_done(self, ok, err, ok_msg):
+        self.toast(ok_msg if ok else f"Failed: {err}")
+        self.set_busy(False)
+        self._begin(True, quick=True)  # refresh installed state from local metadata
         return False
 
 
