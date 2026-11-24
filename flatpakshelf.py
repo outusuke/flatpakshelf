@@ -22,6 +22,7 @@ import sys
 import threading
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
+from fnmatch import fnmatchcase
 
 import gi
 
@@ -162,6 +163,33 @@ def list_remote(scope, cached):
     return parse_rows(out, len(REMOTE_COLS))
 
 
+def mask_patterns(scope):
+    """Patterns `flatpak mask` holds for one scope option such as --user."""
+    _rc, out = flatpak("mask", scope)
+    return [ln.strip() for ln in out.splitlines() if ln.startswith("  ")]
+
+
+def is_masked(patterns, app_id, arch, branch):
+    """Port of flatpak's mask matching: id[/arch[/branch]], empty or missing parts match anything."""
+    for pat in patterns:
+        pat = pat.split("/", 1)[1] if pat.startswith(("app/", "runtime/")) else pat
+        segs = (pat.split("/") + ["", ""])[:3]
+        if all(not s or fnmatchcase(v, s) for s, v in zip(segs, (app_id, arch, branch))):
+            return True
+    return False
+
+
+def parse_versions(out):
+    """[(commit, subject, date)] from the History block of `flatpak remote-info --log`."""
+    rows = []
+    for key, val in re.findall(r"^\s*(Commit|Subject|Date):[ \t]*(.*)$", out.partition("History:")[2], re.M):
+        if key == "Commit":
+            rows.append([val.strip(), "", ""])
+        elif rows:
+            rows[-1][1 if key == "Subject" else 2] = val.strip()
+    return [tuple(r) for r in rows]
+
+
 def list_updates(scope):
     """(id, arch, branch) of every installed ref in one scope that has an update."""
     _rc, names = flatpak("remotes", scope, "--columns=name")
@@ -170,7 +198,8 @@ def list_updates(scope):
         _rc, out = flatpak("remote-ls", scope, remote, "--updates",
                            "--columns=ref,application,branch,arch,origin")
         found |= {(i, a, b) for _ref, i, b, a, _o in parse_rows(out, 5)}
-    return found
+    masks = mask_patterns(scope)  # remote-ls ignores masks, flatpak update skips them
+    return {t for t in found if not is_masked(masks, *t)}
 
 
 def _kind(ref):
@@ -180,16 +209,19 @@ def _kind(ref):
 def collect_raw(cached=True):
     """[[kind, id, name, version, branch, arch, origin, scope, summary, installed(0/1/2), size]]
     sorted by name. Installed refs come from `flatpak list`, the rest from `remote-ls`."""
-    with ThreadPoolExecutor(max_workers=5) as ex:  # the calls are independent
+    with ThreadPoolExecutor(max_workers=7) as ex:  # the calls are independent
         f_inst = ex.submit(list_installed)
         f_user = ex.submit(list_remote, SCOPES[0], cached)
         f_sys = ex.submit(list_remote, SCOPES[1], cached)
         f_upd = {s[2:]: ex.submit(list_updates, s) for s in SCOPES}
+        f_mask = {s[2:]: ex.submit(mask_patterns, s) for s in SCOPES}
         inst, avail = f_inst.result(), f_user.result() + f_sys.result()
         upd = {s: f.result() for s, f in f_upd.items()}
+        masks = {s: f.result() for s, f in f_mask.items()}
     pk = {}
     for ref, i, n, v, b, a, o, sc, s, sz in inst:
-        flag = 2 if (i, a, b) in upd.get(sc, ()) else 1  # 2: installed, update pending
+        # 1 installed, 2 installed with an update pending, 3 installed with updates paused
+        flag = 3 if is_masked(masks.get(sc, ()), i, a, b) else 2 if (i, a, b) in upd.get(sc, ()) else 1
         pk[(i, a, b, sc)] = [_kind(ref), i, n, v, b, a, o, sc, s, flag, sz]
     have = {k[:3] for k in pk}
     for ref, i, n, v, b, a, o, s, sz in avail:
@@ -235,7 +267,9 @@ class Pkg(GObject.Object):
         self.name = name or self.id
         self.installed = bool(inst)
         self.upgradable = inst == 2
-        self.status = "upgradable" if self.upgradable else "installed" if self.installed else ""
+        self.paused = inst == 3
+        self.status = ("upgradable" if self.upgradable else "paused" if self.paused
+                       else "installed" if self.installed else "")
         self.ref = f"{self.kind}/{self.id}/{self.arch}/{self.branch}"
         self.hay = f"{self.name} {self.id} {self.summary}".lower()
 
@@ -766,6 +800,12 @@ class Win(Adw.ApplicationWindow):
         self.btn_update = Gtk.Button(label="Update", sensitive=False,
                                      tooltip_text="Update the selected packages")
         self.btn_update.connect("clicked", lambda *_: self.update_selected())
+        self.btn_pause = Gtk.Button(label="Pause updates", sensitive=False,
+                                    tooltip_text="Stop updating the selected package (flatpak mask)")
+        self.btn_pause.connect("clicked", lambda *_: self.toggle_pause())
+        self.btn_version = Gtk.Button(label="Change version\u2026", sensitive=False,
+                                      tooltip_text="Install an older version of the selected package")
+        self.btn_version.connect("clicked", lambda *_: self.change_version())
         self.search = Gtk.SearchEntry(placeholder_text="Search name, id or description",
                                       width_request=420)
         self.search.connect("search-changed", self.on_search)
@@ -811,7 +851,7 @@ class Win(Adw.ApplicationWindow):
         bar = Gtk.Box(spacing=6, margin_top=6, margin_bottom=6, margin_start=12,
                       margin_end=12)
         for w in (self.btn_install, self.btn_update, self.btn_launch, self.btn_folder,
-                  self.btn_remove, self.count):
+                  self.btn_pause, self.btn_version, self.btn_remove, self.count):
             bar.append(w)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body.append(paned)
@@ -998,6 +1038,10 @@ class Win(Adw.ApplicationWindow):
         one = sel[0] if len(sel) == 1 else None
         self.btn_launch.set_sensitive(bool(one and one.installed and one.kind == "app"))
         self.btn_folder.set_sensitive(bool(one and one.installed and os.path.isdir(data_dir(one))))
+        can_edit = not self.busy and bool(one and one.installed)
+        self.btn_pause.set_sensitive(can_edit)
+        self.btn_pause.set_label("Resume updates" if one and one.paused else "Pause updates")
+        self.btn_version.set_sensitive(can_edit)
         picked = any(p.upgradable for p in sel)
         self.btn_update.set_label("Update" if picked or not self.n_upg else "Update all")
         self.btn_update.set_sensitive(not self.busy and (picked or self.n_upg > 0))
@@ -1272,6 +1316,20 @@ class Win(Adw.ApplicationWindow):
         if pkgs:
             self.run_batch(update_commands(pkgs), f"Updated {plural(len(pkgs))}")
 
+    def toggle_pause(self):
+        sel = self.selected()
+        if len(sel) != 1 or not sel[0].installed:
+            return
+        p = sel[0]
+        cmd = ["mask", *scope_args(p.scope), *(["--remove"] if p.paused else []), p.id]
+        self.run_batch([cmd], f"Updates resumed for {p.name}" if p.paused
+                       else f"Updates paused for {p.name}")
+
+    def change_version(self):
+        sel = self.selected()
+        if len(sel) == 1 and sel[0].installed:
+            VersionWindow(self, sel[0]).present()
+
     def launch_selected(self):
         sel = self.selected()
         if len(sel) != 1 or not sel[0].installed or sel[0].kind != "app":
@@ -1350,6 +1408,53 @@ class HistoryWindow(Adw.Window):
         if len(rows) > HISTORY_LIMIT:
             self.box.append(Adw.ActionRow(title=f"\u2026 and {len(rows) - HISTORY_LIMIT} older entries"))
         return False
+
+
+class VersionWindow(Adw.Window):
+    """Install an older commit of one package, optionally pausing its updates afterwards."""
+    LIMIT = 30
+
+    def __init__(self, parent, p):
+        super().__init__(transient_for=parent, modal=True, title=f"Change version of {p.name}",
+                         default_width=560, default_height=520)
+        self.parent_win, self.p = parent, p
+        self.keep = Adw.SwitchRow(title="Keep this version", active=True,
+                                  subtitle="Pause updates afterwards, otherwise the next update undoes it")
+        top = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        top.append(self.keep)
+        self.empty = Gtk.Label(label="Loading\u2026", css_classes=["dim-label"], margin_top=24)
+        self.box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"],
+                               valign=Gtk.Align.START)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
+                       margin_bottom=12, margin_start=12, margin_end=12)
+        for w in (top, self.empty, self.box):
+            body.append(w)
+        tb = Adw.ToolbarView()
+        tb.add_top_bar(Adw.HeaderBar())
+        tb.set_content(Gtk.ScrolledWindow(vexpand=True, child=body))
+        self.set_content(tb)
+        threading.Thread(target=lambda: GLib.idle_add(self.show, parse_versions(commit_log(p))),
+                         daemon=True).start()
+
+    def show(self, rows):
+        self.empty.set_label("" if rows else "No older versions found")
+        for commit, subject, date in rows[:self.LIMIT]:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(subject or "(no subject)"),
+                                subtitle=GLib.markup_escape_text(f"{date} \u00b7 {commit[:12]}"))
+            btn = Gtk.Button(label="Install", valign=Gtk.Align.CENTER)
+            btn.connect("clicked", lambda _b, c=commit: self.pick(c))
+            row.add_suffix(btn)
+            self.box.append(row)
+        return False
+
+    def pick(self, commit):
+        p = self.p
+        cmds = [["update", "--noninteractive", "-y", *scope_args(p.scope),
+                 f"--commit={commit}", p.ref]]
+        if self.keep.get_active() and not p.paused:
+            cmds.append(["mask", *scope_args(p.scope), p.id])  # after the update: masked refs are skipped
+        self.close()
+        self.parent_win.run_batch(cmds, f"{p.name} set to {commit[:12]}")
 
 
 class AutoUpdatesWindow(Adw.Window):

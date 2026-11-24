@@ -24,6 +24,8 @@ Menu, Automatic updates. Flatpakshelf writes a systemd user timer (`flatpakshelf
 
 Menu, Recent changes lists installs, updates and removals from `flatpak history`, which reads the systemd journal.
 
+Pause updates stops updates for one installed package with `flatpak mask`; Resume updates removes the mask. Change version lists older commits from `flatpak remote-info --log` and installs the one you pick with `flatpak update --commit`, and can pause updates so it stays.
+
 ## License
 
 GPL-3.0-or-later
