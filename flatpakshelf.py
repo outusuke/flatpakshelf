@@ -33,6 +33,7 @@ APP_ID = "io.github.outusuke.Flatpakshelf"
 CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")
+STATE_FILE = os.path.join(CACHE_DIR, "autoupdate.json")
 # Plain tab-separated output, no headers or fancy formatting.
 FLATPAK_ENV = {**os.environ, "FLATPAK_FANCY_OUTPUT": "0"}
 SCOPES = ("--user", "--system")
@@ -56,7 +57,7 @@ Description=Update Flatpaks (Flatpakshelf)
 
 [Service]
 Type=oneshot
-ExecStart={exe} update --noninteractive -y{extra}
+ExecStart={exe} --auto-update{extra}
 """
 TIMER_UNIT = """[Unit]
 Description=Update Flatpaks on a schedule (Flatpakshelf)
@@ -535,13 +536,70 @@ def gnome_software_settings():
 
 def write_units(mode, freq):
     os.makedirs(UNIT_DIR, exist_ok=True)
-    exe = shutil.which("flatpak") or "/usr/bin/flatpak"
     # --no-deploy only pulls the new commits; the app's Update button then deploys them
     extra = " --no-deploy" if mode == 0 else ""
-    for name, text in ((AUTO_SERVICE, SERVICE_UNIT.format(exe=exe, extra=extra)),
+    for name, text in ((AUTO_SERVICE, SERVICE_UNIT.format(exe=BIN_PATH, extra=extra)),
                        (AUTO_TIMER, TIMER_UNIT.format(freq=freq))):
         with open(os.path.join(UNIT_DIR, name), "w") as f:
             f.write(text)
+
+
+def notify(title, body):
+    app = Gio.Application(application_id=APP_ID)
+    app.register(None)
+    note = Gio.Notification.new(title)
+    note.set_body(body)
+    note.set_default_action("app.open")
+    app.send_notification("auto-update", note)
+    conn = app.get_dbus_connection()
+    if conn:
+        conn.flush_sync(None)  # we exit right after, so push the message out first
+
+
+def update_line(i, before, after):
+    old, new = before.get(i), after.get(i)
+    row = new or old
+    ov, nv = old[3] if old else "", new[3] if new else ""
+    name = row[2] if row and row[2] else i
+    return f"{name} {ov} \u2192 {nv}" if ov and nv and ov != nv else name
+
+
+def auto_update(download_only):
+    before = {r[1]: r for r in list_installed()}
+    pending = set().union(*(list_updates(s) for s in SCOPES))
+    if not pending:
+        return 0
+    rc, msg = flatpak_op("update", "--noninteractive", "-y", *(["--no-deploy"] if download_only else []))
+    if rc:
+        notify("Flatpak update failed", (msg.splitlines() or [f"flatpak exited with {rc}"])[-1])
+        return 1
+    ids = sorted({i for i, _a, _b in pending})
+    after = before
+    if download_only:
+        key = [f"{i}/{a}/{b}" for i, a, b in sorted(pending)]
+        try:
+            seen = json.loads(read_text(STATE_FILE))
+        except ValueError:
+            seen = None
+        if seen == key:
+            return 0
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(STATE_FILE, "w") as f:
+                json.dump(key, f)
+        except OSError:
+            pass
+    else:
+        after = {r[1]: r for r in list_installed()}
+    lines = [update_line(i, before, after) for i in ids]
+    if len(lines) > 8:
+        lines[8:] = [f"\u2026 and {len(lines) - 8} more"]
+    if download_only:
+        notify(f"{plural(len(ids), 'Flatpak update')} ready",
+               "\n".join(lines + ["Open Flatpakshelf to install them"]))
+    else:
+        notify(f"{plural(len(ids), 'Flatpak')} updated", "\n".join(lines))
+    return 0
 
 
 def save_automatic(now, loaded, freq):
@@ -1155,6 +1213,10 @@ class Win(Adw.ApplicationWindow):
     def entry_label():
         return "Remove from app menu" if os.path.exists(DESKTOP_PATH) else "Add to app menu"
 
+    def refresh_entry_label(self):
+        self.app_menu.remove(2)
+        self.app_menu.insert(2, self.entry_label(), "win.toggle-menu-entry")
+
     def toggle_menu_entry(self):
         adding = not os.path.exists(DESKTOP_PATH)
         try:
@@ -1162,8 +1224,7 @@ class Win(Adw.ApplicationWindow):
         except OSError as e:
             self.toast(f"Failed: {e}")
             return
-        self.app_menu.remove(2)
-        self.app_menu.insert(2, self.entry_label(), "win.toggle-menu-entry")
+        self.refresh_entry_label()
         self.toast("Added to the app menu" if adding else "Removed from the app menu")
 
     def update_selected(self):
@@ -1286,6 +1347,13 @@ class AutoUpdatesWindow(Adw.Window):
             self.gs.set_boolean("download-updates", now["gnome"])
         loaded, freq, win = self.loaded, self.freqs[now["freq"]], self.parent_win
         self.close()
+        if now["enabled"] and not os.path.exists(BIN_PATH):
+            try:
+                install_self()
+            except OSError as e:
+                win.toast(f"Failed: {e}")
+                return
+            win.refresh_entry_label()
 
         def work():
             err = save_automatic(now, loaded, freq)
@@ -1333,6 +1401,9 @@ def uninstall_self():
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID)
+        act = Gio.SimpleAction.new("open", None)
+        act.connect("activate", lambda *_: self.activate())
+        self.add_action(act)
 
     def do_activate(self):
         win = Win(self)
@@ -1345,5 +1416,7 @@ if __name__ == "__main__":
         install_self()
     elif "--uninstall" in sys.argv[1:]:
         uninstall_self()
+    elif "--auto-update" in sys.argv[1:]:
+        sys.exit(auto_update("--no-deploy" in sys.argv[1:]))
     else:
         App().run(None)
