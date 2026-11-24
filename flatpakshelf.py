@@ -706,7 +706,38 @@ def update_line(i, before, after):
     return f"{name} {ov} \u2192 {nv}" if ov and nv and ov != nv else name
 
 
+GAMEMODE = "com.feralinteractive.GameMode"
+
+
+def gamemode_active():
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync(GAMEMODE, "/com/feralinteractive/GameMode",
+                              "org.freedesktop.DBus.Properties", "Get",
+                              GLib.Variant("(ss)", (GAMEMODE, "ClientCount")), None,
+                              Gio.DBusCallFlags.NO_AUTO_START, 2000, None)
+    except GLib.Error:
+        return False
+    return reply.unpack()[0] > 0
+
+
+def update_blocker():
+    """Why automatic updates should wait, or "". Same checks as GNOME Software, plus GameMode."""
+    if Gio.NetworkMonitor.get_default().get_network_metered():
+        return "the connection is metered"
+    monitor = Gio.PowerProfileMonitor.dup_default()
+    if monitor and monitor.get_power_saver_enabled():
+        return "power saver is on"
+    if gamemode_active():
+        return "GameMode is active"
+    return ""
+
+
 def auto_update(download_only):
+    why = update_blocker()
+    if why:
+        print(f"Automatic update skipped: {why}", file=sys.stderr)
+        return 0
     before = {r[1]: r for r in list_installed()}
     pending = set().union(*(list_updates(s) for s in SCOPES))
     if not pending:
