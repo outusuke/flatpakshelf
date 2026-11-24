@@ -1466,8 +1466,7 @@ class Win(Adw.ApplicationWindow):
             self.show_tab(idx, text)
         return False
 
-    @staticmethod
-    def detail_row(title, sub="", warn=False, prop=False, changed=False, switch=None, p=None):
+    def detail_row(self, title, sub="", warn=False, prop=False, changed=False, switch=None, p=None):
         row = Adw.ActionRow(title=title, subtitle=sub, use_markup=False, title_lines=0,
                             subtitle_lines=0, subtitle_selectable=True)
         if prop:  # small dimmed key above a larger value
