@@ -42,6 +42,33 @@ REMOTE_COLS = ("ref", "application", "name", "version", "branch", "arch", "origi
                "description", "installed-size")
 SIZE_UNITS = {"bytes": 1, "byte": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
 MODES = ["All", "Installed", "Not installed", "Applications", "Runtimes", "Upgradable"]
+UNIT_DIR = os.path.join(GLib.get_user_config_dir(), "systemd", "user")
+AUTO_TIMER = "flatpakshelf-update.timer"
+AUTO_SERVICE = "flatpakshelf-update.service"
+AUTO_MODE_LABELS = ["Download only", "Download and install"]
+AUTO_MODE_HINTS = ["Downloads updates, you install them from here",
+                   "Installs updates without asking"]
+AUTO_FREQS = {"daily": "Daily", "weekly": "Weekly"}
+GS_NOTE = "Separate from the timer above."
+GS_BOTH = "Both are on and will update the same apps. Turn one off."
+SERVICE_UNIT = """[Unit]
+Description=Update Flatpaks (Flatpakshelf)
+
+[Service]
+Type=oneshot
+ExecStart={exe} update --noninteractive -y{extra}
+"""
+TIMER_UNIT = """[Unit]
+Description=Update Flatpaks on a schedule (Flatpakshelf)
+
+[Timer]
+OnCalendar={freq}
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
 
 
 # ---------------------------------------------------------------- data layer
@@ -467,6 +494,78 @@ def plural(n, word="package"):
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+def systemctl(*args):
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True,
+                          text=True).stdout.strip()
+
+
+def read_text(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def automatic_settings():
+    exec_line = re.search(r"^ExecStart=(.*)$", read_text(os.path.join(UNIT_DIR, AUTO_SERVICE)), re.M)
+    cal = re.search(r"^OnCalendar=(.*?)\s*$", read_text(os.path.join(UNIT_DIR, AUTO_TIMER)), re.M)
+    mode = 1 if exec_line and "--no-deploy" not in exec_line.group(1) else 0
+    return {"mode": mode, "freq": cal.group(1) if cal else "daily"}
+
+
+def timer_state():
+    """(systemctl usable, enabled, next run) for the user timer."""
+    try:
+        enabled = systemctl("is-enabled", AUTO_TIMER) == "enabled"
+        nxt = systemctl("show", AUTO_TIMER, "-p", "NextElapseUSecRealtime", "--value")
+    except OSError:
+        return False, False, ""
+    return True, enabled, nxt
+
+
+def gnome_software_settings():
+    """GNOME Software's settings, or None when it isn't installed (a missing schema would abort)."""
+    src = Gio.SettingsSchemaSource.get_default()
+    schema = src and src.lookup("org.gnome.software", True)
+    if schema and schema.has_key("download-updates"):
+        return Gio.Settings.new_full(schema, None, None)
+    return None
+
+
+def write_units(mode, freq):
+    os.makedirs(UNIT_DIR, exist_ok=True)
+    exe = shutil.which("flatpak") or "/usr/bin/flatpak"
+    # --no-deploy only pulls the new commits; the app's Update button then deploys them
+    extra = " --no-deploy" if mode == 0 else ""
+    for name, text in ((AUTO_SERVICE, SERVICE_UNIT.format(exe=exe, extra=extra)),
+                       (AUTO_TIMER, TIMER_UNIT.format(freq=freq))):
+        with open(os.path.join(UNIT_DIR, name), "w") as f:
+            f.write(text)
+
+
+def save_automatic(now, loaded, freq):
+    """Write the units and switch the timer as needed; returns an error message or ""."""
+    sched = (now["mode"], now["freq"]) != (loaded["mode"], loaded["freq"])
+    toggled = now["enabled"] != loaded["enabled"]
+    steps = []
+    try:
+        if sched or (now["enabled"] and toggled):
+            write_units(now["mode"], freq)
+            steps.append(["daemon-reload"])
+        if now["enabled"] and (sched or toggled):
+            steps += [["enable", AUTO_TIMER], ["restart", AUTO_TIMER]]
+        elif toggled:
+            steps.append(["disable", "--now", AUTO_TIMER])
+        for step in steps:
+            r = subprocess.run(["systemctl", "--user", *step], capture_output=True, text=True)
+            if r.returncode:
+                return (r.stderr or r.stdout).strip() or f"systemctl exited with {r.returncode}"
+    except OSError as e:
+        return str(e)
+    return ""
+
+
 def filter_rows(rows, mode, query):
     """Mode and search filter in plain Python. `query` must be lower case."""
     if mode == 1:
@@ -540,11 +639,15 @@ class Win(Adw.ApplicationWindow):
         hb.pack_start(self.spin)
         menu = Gio.Menu()
         menu.append("Remove unused runtimes", "win.remove-unused")
+        menu.append("Automatic updates", "win.auto-updates")
         self.app_menu = menu
         menu.append(self.entry_label(), "win.toggle-menu-entry")
         hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         act = Gio.SimpleAction.new("remove-unused", None)
         act.connect("activate", lambda *_: self.remove_unused())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("auto-updates", None)
+        act.connect("activate", lambda *_: AutoUpdatesWindow(self).present())
         self.add_action(act)
         act = Gio.SimpleAction.new("toggle-menu-entry", None)
         act.connect("activate", lambda *_: self.toggle_menu_entry())
@@ -1059,8 +1162,8 @@ class Win(Adw.ApplicationWindow):
         except OSError as e:
             self.toast(f"Failed: {e}")
             return
-        self.app_menu.remove(1)
-        self.app_menu.insert(1, self.entry_label(), "win.toggle-menu-entry")
+        self.app_menu.remove(2)
+        self.app_menu.insert(2, self.entry_label(), "win.toggle-menu-entry")
         self.toast("Added to the app menu" if adding else "Removed from the app menu")
 
     def update_selected(self):
@@ -1100,6 +1203,95 @@ class Win(Adw.ApplicationWindow):
         self.set_busy(False)
         self._begin(True, quick=True)  # refresh installed state from local metadata
         return False
+
+
+class AutoUpdatesWindow(Adw.Window):
+    def __init__(self, parent):
+        super().__init__(transient_for=parent, modal=True, title="Automatic updates",
+                         default_width=560, default_height=520)
+        self.parent_win = parent
+        have, enabled, nxt = timer_state()
+        cfg = automatic_settings()
+        self.gs = gnome_software_settings()
+        self.freqs = list(AUTO_FREQS) + [v for v in [cfg["freq"]] if v not in AUTO_FREQS]
+        self.loaded = {"enabled": enabled, "mode": cfg["mode"],
+                       "gnome": bool(self.gs and self.gs.get_boolean("download-updates")),
+                       "freq": self.freqs.index(cfg["freq"])}
+
+        hb = Adw.HeaderBar()
+        self.apply_btn = Gtk.Button(label="Apply", css_classes=["suggested-action"])
+        self.apply_btn.connect("clicked", lambda *_: self.apply())
+        hb.pack_end(self.apply_btn)
+
+        page = Adw.PreferencesPage()
+        if not have:
+            grp = Adw.PreferencesGroup()
+            grp.add(Adw.ActionRow(title="systemd is not available", subtitle="systemctl not found"))
+            page.add(grp)
+
+        self.sw = Adw.SwitchRow(title="Run automatically", subtitle=AUTO_TIMER, active=enabled)
+        self.sw.connect("notify::active", lambda *_: self.refresh())
+        when = nxt if enabled and nxt not in ("", "n/a") else "Not scheduled"
+        sched = Adw.PreferencesGroup(
+            title="Schedule",
+            description=f"Runs while you are logged in. Units are saved to {UNIT_DIR}")
+        sched.add(self.sw)
+        self.freq_row = self.combo("Check", [AUTO_FREQS.get(v, f"{v} (current config)")
+                                             for v in self.freqs], self.loaded["freq"])
+        sched.add(self.freq_row)
+        sched.add(Adw.ActionRow(title="Next run", subtitle=GLib.markup_escape_text(when)))
+
+        self.mode_row = self.combo("Mode", AUTO_MODE_LABELS, self.loaded["mode"])
+        what = Adw.PreferencesGroup(title="Updates")
+        what.add(self.mode_row)
+
+        for grp in (sched, what):
+            grp.set_sensitive(have)
+            page.add(grp)
+        if self.gs:
+            self.gs_row = Adw.SwitchRow(title="Download updates automatically",
+                                        subtitle="GNOME Software", active=self.loaded["gnome"])
+            self.gs_row.connect("notify::active", lambda *_: self.refresh())
+            self.gs_group = Adw.PreferencesGroup(title="GNOME Software", description=GS_NOTE)
+            self.gs_group.add(self.gs_row)
+            page.add(self.gs_group)
+        tb = Adw.ToolbarView()
+        tb.add_top_bar(hb)
+        tb.set_content(page)
+        self.set_content(tb)
+        self.refresh()
+
+    def combo(self, title, labels, selected):
+        row = Adw.ComboRow(title=title)
+        row.set_model(Gtk.StringList.new(labels))
+        row.set_selected(selected)
+        row.connect("notify::selected", lambda *_: self.refresh())
+        return row
+
+    def current(self):
+        return {"enabled": self.sw.get_active(), "mode": self.mode_row.get_selected(),
+                "freq": self.freq_row.get_selected(),
+                "gnome": bool(self.gs and self.gs_row.get_active())}
+
+    def refresh(self):
+        now = self.current()
+        self.mode_row.set_subtitle(AUTO_MODE_HINTS[now["mode"]])
+        if self.gs:
+            self.gs_group.set_description(GS_BOTH if now["enabled"] and now["gnome"] else GS_NOTE)
+        self.apply_btn.set_sensitive(now != self.loaded)
+
+    def apply(self):
+        now = self.current()
+        if self.gs and now["gnome"] != self.loaded["gnome"]:
+            self.gs.set_boolean("download-updates", now["gnome"])
+        loaded, freq, win = self.loaded, self.freqs[now["freq"]], self.parent_win
+        self.close()
+
+        def work():
+            err = save_automatic(now, loaded, freq)
+            GLib.idle_add(win.toast, f"Failed: {err}" if err else "Automatic updates saved")
+
+        threading.Thread(target=work, daemon=True).start()
 
 
 BIN_PATH = os.path.expanduser("~/.local/bin/flatpakshelf")

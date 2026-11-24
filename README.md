@@ -18,6 +18,10 @@ python3 flatpakshelf.py --install
 
 Copies the script to `~/.local/bin/flatpakshelf` and adds a menu entry. `--uninstall` removes both.
 
+## Automatic updates
+
+Menu, Automatic updates. Flatpakshelf writes a systemd user timer (`flatpakshelf-update.timer`) in `~/.config/systemd/user` that runs `flatpak update` daily or weekly, either download only or download and install. It runs while you are logged in. The window also shows GNOME Software's automatic download switch.
+
 ## License
 
 GPL-3.0-or-later
