@@ -1,6 +1,6 @@
 # Flatshelf
 
-A Synaptic-style Flatpak manager. GTK4, libadwaita, Everything goes through the `flatpak` command line.
+A Synaptic-style Flatpak manager. GTK4, libadwaita. Installs, updates and removals run through libflatpak; everything else goes through the `flatpak` command line.
 
 ## Run
 
@@ -8,7 +8,7 @@ A Synaptic-style Flatpak manager. GTK4, libadwaita, Everything goes through the 
 python3 flatpakshelf.py
 ```
 
-Requires `python3-gobject`, GTK 4, libadwaita 1.5+ and `flatpak`.
+Requires `python3-gobject`, GTK 4, libadwaita 1.5+, `flatpak` and its GObject typelib (`gir1.2-flatpak-1.0` on Debian and Ubuntu).
 
 ## Install
 
