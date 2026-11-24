@@ -556,12 +556,12 @@ def list_history(days):
     return [r for r in rows if len(r) == len(HISTORY_COLS) and "." in r[2]]
 
 
-def notify(title, body):
+def notify(title, body, action="app.open"):
     app = Gio.Application(application_id=APP_ID)
     app.register(None)
     note = Gio.Notification.new(title)
     note.set_body(body)
-    note.set_default_action("app.open")
+    note.set_default_action(action)
     app.send_notification("auto-update", note)
     conn = app.get_dbus_connection()
     if conn:
@@ -610,7 +610,7 @@ def auto_update(download_only):
         notify(f"{plural(len(ids), 'Flatpak update')} ready",
                "\n".join(lines + ["Open Flatpakshelf to install them"]))
     else:
-        notify(f"{plural(len(ids), 'Flatpak')} updated", "\n".join(lines))
+        notify(f"{plural(len(ids), 'Flatpak')} updated", "\n".join(lines), "app.changes")
     return 0
 
 
@@ -1283,13 +1283,13 @@ class Win(Adw.ApplicationWindow):
 
 
 class HistoryWindow(Adw.Window):
-    def __init__(self, parent):
+    def __init__(self, parent, days=1):
         super().__init__(transient_for=parent, modal=True, title="Recent changes",
                          default_width=640, default_height=560)
         self.gen = 0
         hb = Adw.HeaderBar()
         self.range = Gtk.DropDown.new_from_strings(HISTORY_LABELS)
-        self.range.set_selected(1)
+        self.range.set_selected(days)
         self.range.connect("notify::selected", lambda *_: self.load())
         hb.pack_start(self.range)
         self.box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"],
@@ -1467,6 +1467,16 @@ class App(Adw.Application):
         act = Gio.SimpleAction.new("open", None)
         act.connect("activate", lambda *_: self.activate())
         self.add_action(act)
+        act = Gio.SimpleAction.new("changes", None)
+        act.connect("activate", lambda *_: self.show_changes())
+        self.add_action(act)
+
+    def show_changes(self):
+        win = next((w for w in self.get_windows() if isinstance(w, Win)), None)
+        if not win:
+            self.activate()
+            win = next(w for w in self.get_windows() if isinstance(w, Win))
+        HistoryWindow(win, days=0).present()
 
     def do_activate(self):
         win = Win(self)
