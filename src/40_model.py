@@ -9,6 +9,7 @@ class Pkg(GObject.Object):
          self.scope, self.summary, inst, self.size) = d
         self.size_bytes = size_bytes(self.size)
         self.data, self.data_bytes = "", 0
+        self.icon = None  # "" means no icon, None means not looked up yet
         self.name = name or self.id
         self.installed = bool(inst)
         self.upgradable = inst == 2

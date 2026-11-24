@@ -1,6 +1,8 @@
-TABS = ("Info", "Permissions", "Metadata", "Changes")
+TABS = ("Info", "Permissions", "Metadata", "Changes", "Screenshots")
 TAB_EMPTY = ("No information available.", "No special permissions declared.",
-             "No metadata available.", "No update notes available.")
+             "No metadata available.", "No update notes available.",
+             "No screenshots available.")
+SHOT_TAB = 4  # widgets, not text
 PERM_SECTIONS = ("Context", "Session Bus Policy", "System Bus Policy", "Environment")
 
 
@@ -106,10 +108,85 @@ def parse_permissions(text):
 
 def appstream_files(p):
     scopes = [p.scope] if p.installed else ["user", "system"]
-    roots = {"user": os.path.join(GLib.get_user_data_dir(), "flatpak"),
-             "system": "/var/lib/flatpak"}
-    return [os.path.join(roots.get(sc, roots["system"]), "appstream", p.origin, p.arch,
-                         "active", "appstream.xml.gz") for sc in scopes]
+    return [os.path.join(FLATPAK_ROOTS.get(sc, FLATPAK_ROOTS["system"]), "appstream", p.origin,
+                         p.arch, "active", "appstream.xml.gz") for sc in scopes]
+
+
+def icon_file(p, sizes=(64, 128)):
+    """Cached AppStream icon, else one the installed app exports."""
+    found = [os.path.join(os.path.dirname(x), "icons", f"{s}x{s}", f"{p.id}.png")
+             for x in appstream_files(p) for s in sizes]
+    if p.installed:
+        root = FLATPAK_ROOTS.get(p.scope, FLATPAK_ROOTS["system"])
+        icons = os.path.join(root, "exports", "share", "icons", "hicolor")
+        found += [os.path.join(icons, f"{s}x{s}", "apps", f"{p.id}.png") for s in (*sizes, 256, 48)]
+        found.append(os.path.join(icons, "scalable", "apps", f"{p.id}.svg"))
+    return next((f for f in found if os.path.isfile(f)), "")
+
+
+_TEXTURES = {}
+
+
+def texture_from(path):
+    if path not in _TEXTURES:
+        if len(_TEXTURES) > 600:
+            _TEXTURES.clear()
+        try:
+            _TEXTURES[path] = Gdk.Texture.new_from_filename(path)
+        except GLib.Error:
+            _TEXTURES[path] = None
+    return _TEXTURES[path]
+
+
+def pkg_icon(p):
+    if p.icon is None:
+        p.icon = icon_file(p)
+    return texture_from(p.icon) if p.icon else None
+
+
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+
+
+def as_int(text):
+    return int(text) if text and text.isdigit() else 0
+
+
+def pick_image(images):
+    """Biggest thumbnail up to SHOT_WIDTH, else the smallest larger one, else the source."""
+    thumbs = sorted((w, u) for t, w, u in images if t == "thumbnail" and w)
+    fit = [t for t in thumbs if t[0] <= SHOT_WIDTH]
+    if fit:
+        return fit[-1][1]
+    if thumbs:
+        return thumbs[0][1]
+    return next((u for t, _w, u in images if t == "source"), images[0][2] if images else "")
+
+
+def screenshot_list(p, limit=SHOT_LIMIT):
+    for path in appstream_files(p):
+        try:
+            with gzip.open(path, "rb") as f:
+                for _ev, el in ET.iterparse(f):
+                    if el.tag != "component":
+                        continue
+                    cid = (el.findtext("id") or "").strip()
+                    if cid.removesuffix(".desktop") != p.id:
+                        el.clear()
+                        continue
+                    shots = []
+                    for shot in el.iterfind("screenshots/screenshot"):
+                        caption = next((" ".join("".join(c.itertext()).split())
+                                        for c in shot.iterfind("caption") if not c.get(XML_LANG)), "")
+                        images = [(im.get("type", "source"), as_int(im.get("width")),
+                                   (im.text or "").strip())
+                                  for im in shot.iterfind("image") if not im.get(XML_LANG)]
+                        url = pick_image([i for i in images if i[2].startswith(("https://", "http://"))])
+                        if url:
+                            shots.append((caption, url))
+                    return shots[:limit]
+        except (OSError, ET.ParseError, EOFError):
+            continue
+    return []
 
 
 def release_notes(p, limit=6):

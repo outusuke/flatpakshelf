@@ -12,6 +12,7 @@ Run:
 Everything goes through the flatpak CLI.
 """
 import gzip
+import hashlib
 import json
 import operator
 import os
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 import xml.etree.ElementTree as ET
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
@@ -27,7 +29,8 @@ from fnmatch import fnmatchcase
 
 import gi
 
+gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Flatpak", "1.0")
-from gi.repository import Adw, Flatpak, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Flatpak, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402

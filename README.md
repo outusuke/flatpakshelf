@@ -18,6 +18,10 @@ python3 flatpakshelf.py --install
 
 Copies the script to `~/.local/bin/flatpakshelf` and adds a menu entry. `--uninstall` removes both.
 
+## Icons and screenshots
+
+The package list and the Info tab show each app's icon, and the Screenshots tab shows its screenshots. Both come from the AppStream data Flatpak keeps for each remote (`appstream/<remote>/<arch>/active`). Icons are read from the local copy, so they cost nothing. Screenshots are only URLs in that data, so they are downloaded when you open the tab and kept in `~/.cache/flatpakshelf/media`; click one to see it larger. Packages without AppStream data, such as most runtimes, show a plain placeholder.
+
 ## Automatic updates
 
 Menu, Automatic updates. Flatpakshelf writes a systemd user timer (`flatpakshelf-update.timer`) in `~/.config/systemd/user` that runs `flatpak update` daily or weekly, either download only or download and install. It runs while you are logged in. Like GNOME Software, a run is skipped on a metered connection or in power saver mode, and also while GameMode is active; it tries again every 30 minutes until that changes. The window also shows GNOME Software's automatic download switch.

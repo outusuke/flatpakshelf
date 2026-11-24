@@ -3,6 +3,14 @@ CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")
 STATE_FILE = os.path.join(CACHE_DIR, "autoupdate.json")
+MEDIA_DIR = os.path.join(CACHE_DIR, "media")
+MEDIA_MAX_BYTES = 12_000_000
+SHOT_LIMIT = 8
+SHOT_WIDTH = 800
+SHOT_HEIGHT = 160
+ICON_PX = 28
+FLATPAK_ROOTS = {"user": os.path.join(GLib.get_user_data_dir(), "flatpak"),
+                 "system": "/var/lib/flatpak"}
 # Plain tab-separated output, no headers or fancy formatting.
 FLATPAK_ENV = {**os.environ, "FLATPAK_FANCY_OUTPUT": "0"}
 SCOPES = ("--user", "--system")

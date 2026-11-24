@@ -12,6 +12,7 @@ Run:
 Everything goes through the flatpak CLI.
 """
 import gzip
+import hashlib
 import json
 import operator
 import os
@@ -20,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 import xml.etree.ElementTree as ET
 from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
@@ -27,10 +29,11 @@ from fnmatch import fnmatchcase
 
 import gi
 
+gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Flatpak", "1.0")
-from gi.repository import Adw, Flatpak, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Flatpak, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 
 APP_ID = "io.github.outusuke.Flatpakshelf"
@@ -38,6 +41,14 @@ CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")
 STATE_FILE = os.path.join(CACHE_DIR, "autoupdate.json")
+MEDIA_DIR = os.path.join(CACHE_DIR, "media")
+MEDIA_MAX_BYTES = 12_000_000
+SHOT_LIMIT = 8
+SHOT_WIDTH = 800
+SHOT_HEIGHT = 160
+ICON_PX = 28
+FLATPAK_ROOTS = {"user": os.path.join(GLib.get_user_data_dir(), "flatpak"),
+                 "system": "/var/lib/flatpak"}
 # Plain tab-separated output, no headers or fancy formatting.
 FLATPAK_ENV = {**os.environ, "FLATPAK_FANCY_OUTPUT": "0"}
 SCOPES = ("--user", "--system")
@@ -317,6 +328,35 @@ def list_history(days):
     return [r for r in rows if len(r) == len(HISTORY_COLS) and "." in r[2]]
 
 
+def media_path(url):
+    ext = os.path.splitext(url.partition("?")[0])[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+        ext = ".png"
+    return os.path.join(MEDIA_DIR, hashlib.sha1(url.encode()).hexdigest() + ext)
+
+
+def fetch_media(url):
+    if not url.startswith(("https://", "http://")):
+        return ""
+    path = media_path(url)
+    if os.path.exists(path):
+        return path
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "flatpakshelf"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = r.read(MEDIA_MAX_BYTES + 1)
+        if not data or len(data) > MEDIA_MAX_BYTES:
+            return ""
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        return path
+    except Exception:  # a missing picture is not worth an error
+        return ""
+
+
 class Pkg(GObject.Object):
     """Plain Python attributes on purpose: GObject properties cost a C<->Python round
     trip per access, which is painful with thousands of rows."""
@@ -328,6 +368,7 @@ class Pkg(GObject.Object):
          self.scope, self.summary, inst, self.size) = d
         self.size_bytes = size_bytes(self.size)
         self.data, self.data_bytes = "", 0
+        self.icon = None  # "" means no icon, None means not looked up yet
         self.name = name or self.id
         self.installed = bool(inst)
         self.upgradable = inst == 2
@@ -388,9 +429,11 @@ class PkgModel(GObject.Object, Gio.ListModel):
         self.items_changed(0, removed, len(rows))
 
 
-TABS = ("Info", "Permissions", "Metadata", "Changes")
+TABS = ("Info", "Permissions", "Metadata", "Changes", "Screenshots")
 TAB_EMPTY = ("No information available.", "No special permissions declared.",
-             "No metadata available.", "No update notes available.")
+             "No metadata available.", "No update notes available.",
+             "No screenshots available.")
+SHOT_TAB = 4  # widgets, not text
 PERM_SECTIONS = ("Context", "Session Bus Policy", "System Bus Policy", "Environment")
 
 
@@ -496,10 +539,85 @@ def parse_permissions(text):
 
 def appstream_files(p):
     scopes = [p.scope] if p.installed else ["user", "system"]
-    roots = {"user": os.path.join(GLib.get_user_data_dir(), "flatpak"),
-             "system": "/var/lib/flatpak"}
-    return [os.path.join(roots.get(sc, roots["system"]), "appstream", p.origin, p.arch,
-                         "active", "appstream.xml.gz") for sc in scopes]
+    return [os.path.join(FLATPAK_ROOTS.get(sc, FLATPAK_ROOTS["system"]), "appstream", p.origin,
+                         p.arch, "active", "appstream.xml.gz") for sc in scopes]
+
+
+def icon_file(p, sizes=(64, 128)):
+    """Cached AppStream icon, else one the installed app exports."""
+    found = [os.path.join(os.path.dirname(x), "icons", f"{s}x{s}", f"{p.id}.png")
+             for x in appstream_files(p) for s in sizes]
+    if p.installed:
+        root = FLATPAK_ROOTS.get(p.scope, FLATPAK_ROOTS["system"])
+        icons = os.path.join(root, "exports", "share", "icons", "hicolor")
+        found += [os.path.join(icons, f"{s}x{s}", "apps", f"{p.id}.png") for s in (*sizes, 256, 48)]
+        found.append(os.path.join(icons, "scalable", "apps", f"{p.id}.svg"))
+    return next((f for f in found if os.path.isfile(f)), "")
+
+
+_TEXTURES = {}
+
+
+def texture_from(path):
+    if path not in _TEXTURES:
+        if len(_TEXTURES) > 600:
+            _TEXTURES.clear()
+        try:
+            _TEXTURES[path] = Gdk.Texture.new_from_filename(path)
+        except GLib.Error:
+            _TEXTURES[path] = None
+    return _TEXTURES[path]
+
+
+def pkg_icon(p):
+    if p.icon is None:
+        p.icon = icon_file(p)
+    return texture_from(p.icon) if p.icon else None
+
+
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+
+
+def as_int(text):
+    return int(text) if text and text.isdigit() else 0
+
+
+def pick_image(images):
+    """Biggest thumbnail up to SHOT_WIDTH, else the smallest larger one, else the source."""
+    thumbs = sorted((w, u) for t, w, u in images if t == "thumbnail" and w)
+    fit = [t for t in thumbs if t[0] <= SHOT_WIDTH]
+    if fit:
+        return fit[-1][1]
+    if thumbs:
+        return thumbs[0][1]
+    return next((u for t, _w, u in images if t == "source"), images[0][2] if images else "")
+
+
+def screenshot_list(p, limit=SHOT_LIMIT):
+    for path in appstream_files(p):
+        try:
+            with gzip.open(path, "rb") as f:
+                for _ev, el in ET.iterparse(f):
+                    if el.tag != "component":
+                        continue
+                    cid = (el.findtext("id") or "").strip()
+                    if cid.removesuffix(".desktop") != p.id:
+                        el.clear()
+                        continue
+                    shots = []
+                    for shot in el.iterfind("screenshots/screenshot"):
+                        caption = next((" ".join("".join(c.itertext()).split())
+                                        for c in shot.iterfind("caption") if not c.get(XML_LANG)), "")
+                        images = [(im.get("type", "source"), as_int(im.get("width")),
+                                   (im.text or "").strip())
+                                  for im in shot.iterfind("image") if not im.get(XML_LANG)]
+                        url = pick_image([i for i in images if i[2].startswith(("https://", "http://"))])
+                        if url:
+                            shots.append((caption, url))
+                    return shots[:limit]
+        except (OSError, ET.ParseError, EOFError):
+            continue
+    return []
 
 
 def release_notes(p, limit=6):
@@ -1109,6 +1227,7 @@ class Win(Adw.ApplicationWindow):
         self.cur = None        # package shown in the details pane
         self.info_token = 0
         self.info_timer = 0
+        self.shot_gen = 0      # drops late downloads of a previous selection
         self.detail_cache = {}
         self.busy = False      # an install/uninstall is running
         self.n_upg = 0
@@ -1176,7 +1295,7 @@ class Win(Adw.ApplicationWindow):
 
         self.view = Gtk.ColumnView(show_row_separators=True)
         self.add_col("Status", "status", width=100)
-        name_col = self.add_col("Name", "name", width=230)
+        name_col = self.add_col("Name", "name", width=270, icon=True)
         self.add_col("Application ID", "id", width=280)
         self.add_col("Version", "version", width=120)
         self.add_col("Size", "size", width=90)
@@ -1194,7 +1313,7 @@ class Win(Adw.ApplicationWindow):
         self.tab_views = []
         self.notebook = Gtk.Notebook(vexpand=True)
         for idx, title in enumerate(TABS):
-            if idx < 2:  # Info and Permissions are shown as native rows
+            if idx < 2 or idx == SHOT_TAB:
                 tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
                              margin_bottom=12, margin_start=12, margin_end=12)
             else:
@@ -1205,7 +1324,7 @@ class Win(Adw.ApplicationWindow):
                 Gtk.ScrolledWindow(vexpand=True, min_content_height=170, child=tv),
                 Gtk.Label(label=title))
         self.notebook.connect("switch-page", self.on_tab_switch)
-        paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, vexpand=True, position=440,
+        paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, vexpand=True, position=400,
                           start_child=Gtk.ScrolledWindow(vexpand=True, child=self.view),
                           end_child=self.notebook, shrink_start_child=False,
                           shrink_end_child=False)
@@ -1230,19 +1349,35 @@ class Win(Adw.ApplicationWindow):
         self.set_content(self.overlay)
         self.view.sort_by_column(name_col, Gtk.SortType.ASCENDING)  # last: needs self.count
 
-    def add_col(self, title, prop, width=None, expand=False):
+    def add_col(self, title, prop, width=None, expand=False, icon=False):
         f = Gtk.SignalListItemFactory()
 
         def setup(_f, li):
-            li.set_child(Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
-                                   single_line_mode=True, max_width_chars=1,
-                                   margin_start=6, margin_end=6))
+            lbl = Gtk.Label(xalign=0, hexpand=True, ellipsize=Pango.EllipsizeMode.END,
+                            single_line_mode=True, max_width_chars=1,
+                            margin_start=6, margin_end=6)
+            if not icon:
+                li.set_child(lbl)
+                return
+            box = Gtk.Box(spacing=4, margin_start=4)
+            box.append(Gtk.Image(pixel_size=ICON_PX))
+            box.append(lbl)
+            li.set_child(box)
 
         def bind(_f, li):
-            text = getattr(li.get_item(), prop)
-            lbl = li.get_child()
+            p = li.get_item()
+            text = getattr(p, prop)
+            child = li.get_child()
+            lbl = child.get_last_child() if icon else child
             if lbl.get_label() != text:
                 lbl.set_label(text)
+            if icon:
+                img, tex = child.get_first_child(), pkg_icon(p)
+                if tex:
+                    img.set_from_paintable(tex)
+                else:  # many runtimes ship no icon
+                    img.set_from_icon_name("package-x-generic-symbolic")
+                img.set_opacity(1.0 if tex else 0.45)
 
         f.connect("setup", setup)
         f.connect("bind", bind)
@@ -1451,7 +1586,10 @@ class Win(Adw.ApplicationWindow):
 
         def work():
             try:
-                text = detail_text(p, idx)
+                if idx == SHOT_TAB:
+                    text = (screenshot_list(p) if p.kind == "app" else []) or TAB_EMPTY[idx]
+                else:
+                    text = detail_text(p, idx)
             except Exception as e:
                 text = f"Error: {e}"
             GLib.idle_add(self.set_detail, token, idx, key, text)
@@ -1521,8 +1659,88 @@ class Win(Adw.ApplicationWindow):
             self.load_tab(p, self.info_token, 1)
         return False
 
+    def info_icon(self, p):
+        path = icon_file(p, (128, 64)) if p else ""
+        tex = texture_from(path) if path else None
+        return Gtk.Image(paintable=tex, pixel_size=64, valign=Gtk.Align.START) if tex else None
+
+    def show_shots(self, data):
+        view = self.tab_views[SHOT_TAB]
+        while child := view.get_first_child():
+            view.remove(child)
+        self.shot_gen += 1
+        if isinstance(data, str):
+            note = Gtk.Label(label=data, wrap=True, xalign=0, selectable=True)
+            note.add_css_class("dim-label")
+            view.append(note)
+            return
+        strip = Gtk.Box(spacing=12)
+        view.append(strip)
+        for caption, url in data:
+            slot = Gtk.Button(halign=Gtk.Align.START, valign=Gtk.Align.START)
+            slot.add_css_class("flat")
+            if caption:
+                slot.set_tooltip_text(caption)
+            hold = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+            hold.set_size_request(SHOT_HEIGHT * 16 // 9, SHOT_HEIGHT)
+            hold.append(Gtk.Spinner(spinning=True, hexpand=True, vexpand=True,
+                                    halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER,
+                                    width_request=24, height_request=24))
+            slot.set_child(hold)
+            strip.append(slot)
+            if os.path.exists(media_path(url)):
+                self.shot_ready(self.shot_gen, slot, caption, media_path(url))
+            else:
+                threading.Thread(target=self._shot_work, args=(self.shot_gen, slot, caption, url),
+                                 daemon=True).start()
+
+    def _shot_work(self, gen, slot, caption, url):
+        GLib.idle_add(self.shot_ready, gen, slot, caption, fetch_media(url))
+
+    def shot_ready(self, gen, slot, caption, path):
+        if gen != self.shot_gen:  # selection changed meanwhile
+            return False
+        tex = texture_from(path) if path else None
+        if tex is None:
+            if path:  # not an image: drop it so a later look retries
+                _TEXTURES.pop(path, None)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            hold = Gtk.Image(icon_name="image-missing-symbolic", pixel_size=48,
+                             tooltip_text="Could not load this screenshot")
+            hold.set_size_request(SHOT_HEIGHT * 16 // 9, SHOT_HEIGHT)
+            slot.set_child(hold)
+            slot.set_sensitive(False)
+            return False
+        pic = Gtk.Picture(paintable=tex, content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True)
+        pic.set_size_request(max(1, round(tex.get_width() * SHOT_HEIGHT / tex.get_height())),
+                             SHOT_HEIGHT)
+        slot.set_child(pic)
+        slot.connect("clicked", lambda *_: self.open_shot(path, caption))
+        return False
+
+    def open_shot(self, path, caption):
+        tex = texture_from(path)
+        if tex is None:
+            return
+        name = self.cur.name if self.cur else "Screenshot"
+        dlg = Adw.Dialog(title=f"{name}: {caption}" if caption else name,
+                         content_width=min(tex.get_width(), 1100),
+                         content_height=min(tex.get_height() + 48, 800))
+        body = Adw.ToolbarView()
+        body.add_top_bar(Adw.HeaderBar())
+        body.set_content(Gtk.Picture(paintable=tex, content_fit=Gtk.ContentFit.CONTAIN,
+                                     can_shrink=True))
+        dlg.set_child(body)
+        dlg.present(self)
+
     def show_tab(self, idx, text):
         view = self.tab_views[idx]
+        if idx == SHOT_TAB:
+            self.show_shots(text)
+            return
         if idx >= 2:
             view.get_buffer().set_text(text)
             return
@@ -1537,10 +1755,17 @@ class Win(Adw.ApplicationWindow):
             view.append(note)
         elif idx == 0:
             title, rows = parsed
-            if title:
-                head = Gtk.Label(label=title, wrap=True, xalign=0, selectable=True)
-                head.add_css_class("title-4")
-                view.append(head)
+            icon = self.info_icon(p)
+            if title or icon:
+                top = Gtk.Box(spacing=12)
+                if icon:
+                    top.append(icon)
+                if title:
+                    head = Gtk.Label(label=title, wrap=True, xalign=0, selectable=True,
+                                     valign=Gtk.Align.CENTER)
+                    head.add_css_class("title-4")
+                    top.append(head)
+                view.append(top)
             group = Adw.PreferencesGroup()
             for key, value in rows:
                 group.add(self.detail_row(key, value, prop=True))

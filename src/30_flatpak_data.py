@@ -187,3 +187,32 @@ def list_history(days):
                        "--columns=" + ",".join(HISTORY_COLS))
     rows = (line.split("\t") for line in out.splitlines())
     return [r for r in rows if len(r) == len(HISTORY_COLS) and "." in r[2]]
+
+
+def media_path(url):
+    ext = os.path.splitext(url.partition("?")[0])[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
+        ext = ".png"
+    return os.path.join(MEDIA_DIR, hashlib.sha1(url.encode()).hexdigest() + ext)
+
+
+def fetch_media(url):
+    if not url.startswith(("https://", "http://")):
+        return ""
+    path = media_path(url)
+    if os.path.exists(path):
+        return path
+    try:
+        os.makedirs(MEDIA_DIR, exist_ok=True)
+        req = urllib.request.Request(url, headers={"User-Agent": "flatpakshelf"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = r.read(MEDIA_MAX_BYTES + 1)
+        if not data or len(data) > MEDIA_MAX_BYTES:
+            return ""
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        return path
+    except Exception:  # a missing picture is not worth an error
+        return ""
