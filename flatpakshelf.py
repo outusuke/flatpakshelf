@@ -733,10 +733,19 @@ def update_blocker():
     return ""
 
 
+def retry_later():
+    """Run the update service again in 30 minutes, unless the timer gets switched off."""
+    start = f"systemctl --user is-enabled --quiet {AUTO_TIMER} && " \
+            f"systemctl --user --no-block start {AUTO_SERVICE}"
+    subprocess.run(["systemd-run", "--user", "--quiet", "--collect", "--on-active=30min",
+                    "--unit=flatpakshelf-retry", "sh", "-c", start], capture_output=True)
+
+
 def auto_update(download_only):
     why = update_blocker()
     if why:
         print(f"Automatic update skipped: {why}", file=sys.stderr)
+        retry_later()
         return 0
     before = {r[1]: r for r in list_installed()}
     pending = set().union(*(list_updates(s) for s in SCOPES))
