@@ -22,6 +22,8 @@ Copies the script to `~/.local/bin/flatpakshelf` and adds a menu entry. `--unins
 
 Menu, Automatic updates. Flatpakshelf writes a systemd user timer (`flatpakshelf-update.timer`) in `~/.config/systemd/user` that runs `flatpak update` daily or weekly, either download only or download and install. It runs while you are logged in. The window also shows GNOME Software's automatic download switch.
 
+Menu, Recent changes lists installs, updates and removals from `flatpak history`, which reads the systemd journal.
+
 ## License
 
 GPL-3.0-or-later

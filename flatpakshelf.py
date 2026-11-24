@@ -49,6 +49,10 @@ AUTO_SERVICE = "flatpakshelf-update.service"
 AUTO_MODE_LABELS = ["Download only", "Download and install"]
 AUTO_MODE_HINTS = ["Downloads updates, you install them from here",
                    "Installs updates without asking"]
+HISTORY_COLS = ("time", "change", "application", "branch", "installation", "remote")
+HISTORY_DAYS = (7, 30, 90)
+HISTORY_LABELS = ["Last 7 days", "Last 30 days", "Last 90 days"]
+HISTORY_LIMIT = 300
 AUTO_FREQS = {"daily": "Daily", "weekly": "Weekly"}
 GS_NOTE = "Separate from the timer above."
 GS_BOTH = "Both are on and will update the same apps. Turn one off."
@@ -544,6 +548,14 @@ def write_units(mode, freq):
             f.write(text)
 
 
+def list_history(days):
+    """Newest first: [time, change, app id, branch, installation, remote]."""
+    _rc, out = flatpak("history", "--reverse", f"--since={days}days",
+                       "--columns=" + ",".join(HISTORY_COLS))
+    rows = (line.split("\t") for line in out.splitlines())
+    return [r for r in rows if len(r) == len(HISTORY_COLS) and "." in r[2]]
+
+
 def notify(title, body):
     app = Gio.Application(application_id=APP_ID)
     app.register(None)
@@ -698,11 +710,15 @@ class Win(Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Remove unused runtimes", "win.remove-unused")
         menu.append("Automatic updates", "win.auto-updates")
+        menu.append("Recent changes", "win.history")
         self.app_menu = menu
         menu.append(self.entry_label(), "win.toggle-menu-entry")
         hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         act = Gio.SimpleAction.new("remove-unused", None)
         act.connect("activate", lambda *_: self.remove_unused())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("history", None)
+        act.connect("activate", lambda *_: HistoryWindow(self).present())
         self.add_action(act)
         act = Gio.SimpleAction.new("auto-updates", None)
         act.connect("activate", lambda *_: AutoUpdatesWindow(self).present())
@@ -1214,8 +1230,8 @@ class Win(Adw.ApplicationWindow):
         return "Remove from app menu" if os.path.exists(DESKTOP_PATH) else "Add to app menu"
 
     def refresh_entry_label(self):
-        self.app_menu.remove(2)
-        self.app_menu.insert(2, self.entry_label(), "win.toggle-menu-entry")
+        self.app_menu.remove(3)
+        self.app_menu.insert(3, self.entry_label(), "win.toggle-menu-entry")
 
     def toggle_menu_entry(self):
         adding = not os.path.exists(DESKTOP_PATH)
@@ -1263,6 +1279,53 @@ class Win(Adw.ApplicationWindow):
         self.toast(ok_msg if ok else f"Failed: {err}")
         self.set_busy(False)
         self._begin(True, quick=True)  # refresh installed state from local metadata
+        return False
+
+
+class HistoryWindow(Adw.Window):
+    def __init__(self, parent):
+        super().__init__(transient_for=parent, modal=True, title="Recent changes",
+                         default_width=640, default_height=560)
+        self.gen = 0
+        hb = Adw.HeaderBar()
+        self.range = Gtk.DropDown.new_from_strings(HISTORY_LABELS)
+        self.range.set_selected(1)
+        self.range.connect("notify::selected", lambda *_: self.load())
+        hb.pack_start(self.range)
+        self.box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"],
+                               margin_top=12, margin_bottom=12, margin_start=12, margin_end=12,
+                               valign=Gtk.Align.START)
+        self.empty = Gtk.Label(css_classes=["dim-label"], margin_top=48)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        body.append(self.empty)
+        body.append(self.box)
+        tb = Adw.ToolbarView()
+        tb.add_top_bar(hb)
+        tb.set_content(Gtk.ScrolledWindow(vexpand=True, child=body))
+        self.set_content(tb)
+        self.load()
+
+    def load(self):
+        self.gen += 1
+        gen, days = self.gen, HISTORY_DAYS[self.range.get_selected()]
+        self.empty.set_label("Loading\u2026")
+
+        def work():
+            GLib.idle_add(self.show, list_history(days), gen)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def show(self, rows, gen):
+        if gen != self.gen:
+            return False
+        self.box.remove_all()
+        self.empty.set_label("" if rows else "No changes in this period")
+        for time, change, app, branch, scope, origin in rows[:HISTORY_LIMIT]:
+            detail = " \u00b7 ".join(x for x in (time, change, branch, scope, origin) if x)
+            self.box.append(Adw.ActionRow(title=GLib.markup_escape_text(app),
+                                          subtitle=GLib.markup_escape_text(detail)))
+        if len(rows) > HISTORY_LIMIT:
+            self.box.append(Adw.ActionRow(title=f"\u2026 and {len(rows) - HISTORY_LIMIT} older entries"))
         return False
 
 
