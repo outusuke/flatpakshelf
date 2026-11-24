@@ -538,6 +538,29 @@ def gnome_software_settings():
     return None
 
 
+GS_SERVICE = "gnome-software.service"
+
+
+def gs_paused():
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-enabled", GS_SERVICE],
+                           capture_output=True, text=True)
+    except OSError:
+        return False
+    return r.stdout.strip() == "masked"
+
+
+def set_gs_paused(on):
+    """Mask or unmask GNOME Software's background service; returns an error message or ""."""
+    verb = ["mask", "--now"] if on else ["unmask"]
+    try:
+        r = subprocess.run(["systemctl", "--user", *verb, GS_SERVICE],
+                           capture_output=True, text=True)
+    except OSError as e:
+        return str(e)
+    return "" if r.returncode == 0 else (r.stderr or r.stdout).strip() or f"systemctl exited with {r.returncode}"
+
+
 def write_units(mode, freq):
     os.makedirs(UNIT_DIR, exist_ok=True)
     # --no-deploy only pulls the new commits; the app's Update button then deploys them
@@ -1340,6 +1363,7 @@ class AutoUpdatesWindow(Adw.Window):
         self.freqs = list(AUTO_FREQS) + [v for v in [cfg["freq"]] if v not in AUTO_FREQS]
         self.loaded = {"enabled": enabled, "mode": cfg["mode"],
                        "gnome": bool(self.gs and self.gs.get_boolean("download-updates")),
+                       "gs_paused": bool(self.gs and gs_paused()),
                        "freq": self.freqs.index(cfg["freq"])}
 
         hb = Adw.HeaderBar()
@@ -1378,6 +1402,11 @@ class AutoUpdatesWindow(Adw.Window):
             self.gs_row.connect("notify::active", lambda *_: self.refresh())
             self.gs_group = Adw.PreferencesGroup(title="GNOME Software", description=GS_NOTE)
             self.gs_group.add(self.gs_row)
+            self.gs_pause = Adw.SwitchRow(title="Pause background activity",
+                                          subtitle="Stops its background refresh and its own notifications",
+                                          active=self.loaded["gs_paused"])
+            self.gs_pause.connect("notify::active", lambda *_: self.refresh())
+            self.gs_group.add(self.gs_pause)
             page.add(self.gs_group)
         tb = Adw.ToolbarView()
         tb.add_top_bar(hb)
@@ -1395,7 +1424,8 @@ class AutoUpdatesWindow(Adw.Window):
     def current(self):
         return {"enabled": self.sw.get_active(), "mode": self.mode_row.get_selected(),
                 "freq": self.freq_row.get_selected(),
-                "gnome": bool(self.gs and self.gs_row.get_active())}
+                "gnome": bool(self.gs and self.gs_row.get_active()),
+                "gs_paused": bool(self.gs and self.gs_pause.get_active())}
 
     def refresh(self):
         now = self.current()
@@ -1408,6 +1438,12 @@ class AutoUpdatesWindow(Adw.Window):
         now = self.current()
         if self.gs and now["gnome"] != self.loaded["gnome"]:
             self.gs.set_boolean("download-updates", now["gnome"])
+        if self.gs and now["gs_paused"] != self.loaded["gs_paused"]:
+            err = set_gs_paused(now["gs_paused"])
+            if err:
+                self.close()
+                self.parent_win.toast(f"Failed: {err}")
+                return
         loaded, freq, win = self.loaded, self.freqs[now["freq"]], self.parent_win
         self.close()
         if now["enabled"] and not os.path.exists(BIN_PATH):
