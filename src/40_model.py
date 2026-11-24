@@ -30,7 +30,20 @@ def plural(n, word="package"):
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
-def filter_rows(rows, mode, query):
+def search_rows(rows, query, how):
+    if how == 1:
+        return [p for p in rows if query in p.name.lower()]
+    if how == 2:
+        return [p for p in rows if query in p.id.lower()]
+    if how == 3:
+        word = re.compile(r"(?<![a-z0-9])" + re.escape(query))
+        return [p for p in rows if word.search(p.hay)]
+    if how == 4:
+        return [p for p in rows if query in (p.name.lower(), p.id.lower())]
+    return [p for p in rows if query in p.hay]
+
+
+def filter_rows(rows, mode, query, how=0):
     """Mode and search filter in plain Python. `query` must be lower case."""
     if mode == 1:
         rows = [p for p in rows if p.installed]
@@ -43,7 +56,7 @@ def filter_rows(rows, mode, query):
     elif mode == 5:
         rows = [p for p in rows if p.upgradable]
     if query:
-        rows = [p for p in rows if query in p.hay]
+        rows = search_rows(rows, query, how)
     return rows
 
 

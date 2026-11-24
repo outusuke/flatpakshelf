@@ -73,10 +73,27 @@ class Win(Adw.ApplicationWindow):
         self.btn_version = Gtk.Button(label="Change version\u2026", sensitive=False,
                                       tooltip_text="Install an older version of the selected package")
         self.btn_version.connect("clicked", lambda *_: self.change_version())
-        self.search = Gtk.SearchEntry(placeholder_text="Search name, id or description",
+        self.search = Gtk.SearchEntry(placeholder_text=f"Search \u00b7 {SEARCH_MODES[0]}",
                                       width_request=420)
         self.search.connect("search-changed", self.on_search)
-        hb.set_title_widget(self.search)
+        self.search.get_delegate().set_margin_end(32)  # room for the mode button
+        mode_menu = Gio.Menu()
+        for i, label in enumerate(SEARCH_MODES):
+            item = Gio.MenuItem.new(label, None)
+            item.set_action_and_target_value("win.search-mode", GLib.Variant.new_string(str(i)))
+            mode_menu.append_item(item)
+        mode_btn = Gtk.MenuButton(icon_name="pan-down-symbolic", menu_model=mode_menu,
+                                  tooltip_text="What the search matches", halign=Gtk.Align.END,
+                                  valign=Gtk.Align.CENTER, margin_end=32,
+                                  css_classes=["flat", "circular"])
+        overlay = Gtk.Overlay(child=self.search)
+        overlay.add_overlay(mode_btn)
+        hb.set_title_widget(overlay)
+        self.search_idx = 0
+        mode_act = Gio.SimpleAction.new_stateful("search-mode", GLib.VariantType.new("s"),
+                                                 GLib.Variant.new_string("0"))
+        mode_act.connect("activate", self.on_search_mode)
+        self.add_action(mode_act)
 
         self.view = Gtk.ColumnView(show_row_separators=True)
         self.add_col("Status", "status", width=100)
@@ -300,7 +317,7 @@ class Win(Adw.ApplicationWindow):
         self.all.sort(key=lambda p: get(p).casefold(), reverse=self.sort_desc)
 
     def refilter(self):
-        rows = filter_rows(self.all, self.mode.get_selected(), self.query)
+        rows = filter_rows(self.all, self.mode.get_selected(), self.query, self.search_idx)
         if rows is self.all:
             rows = list(rows)
         self.model.set_rows(rows)
@@ -308,6 +325,12 @@ class Win(Adw.ApplicationWindow):
         if self.n_upg:
             text += f", {self.n_upg} upgradable"
         self.count.set_text(text + ", measuring user data…" if self.scanning else text)
+
+    def on_search_mode(self, act, value):
+        act.set_state(value)
+        self.search_idx = int(value.get_string())
+        self.search.set_placeholder_text(f"Search \u00b7 {SEARCH_MODES[self.search_idx]}")
+        self.refilter()
 
     def on_search(self, entry):
         self.query = entry.get_text().strip().lower()

@@ -6,6 +6,8 @@ STATE_FILE = os.path.join(CACHE_DIR, "autoupdate.json")
 MEDIA_DIR = os.path.join(CACHE_DIR, "media")
 MEDIA_MAX_BYTES = 12_000_000
 SHOT_LIMIT = 8
+SEARCH_MODES = ("Name, ID & description", "Name only", "Application ID", "Word start",
+                "Exact name or ID")
 SHOT_WIDTH = 800
 SHOT_HEIGHT = 160
 ICON_PX = 28
