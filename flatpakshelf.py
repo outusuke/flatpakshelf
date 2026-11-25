@@ -2024,6 +2024,11 @@ class App(Adw.Application):
         HistoryWindow(win, days=0).present()
 
     def do_activate(self):
+        # menu clicks and notification clicks all land here
+        win = next((w for w in self.get_windows() if isinstance(w, Win)), None)
+        if win:
+            win.present()
+            return
         win = Win(self)
         win.present()
         win.start()
