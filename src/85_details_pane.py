@@ -176,12 +176,9 @@ class DetailsMixin:
         if idx == SHOT_TAB:
             self.show_shots(text)
             return
-        if idx >= 2:
-            view.get_buffer().set_text(text)
-            return
         while child := view.get_first_child():
             view.remove(child)
-        parsed = (parse_info, parse_permissions)[idx](text)
+        parsed = (parse_info, parse_permissions, parse_metadata, parse_changes)[idx](text)
         p = self.cur
         editable = p if p and p.installed and p.kind == "app" else None
         if parsed is None:  # status message such as "Loading…" or "No special permissions"
@@ -204,6 +201,17 @@ class DetailsMixin:
             group = Adw.PreferencesGroup()
             for key, value in rows:
                 group.add(self.detail_row(key, value, prop=True))
+            view.append(group)
+        elif idx == 2:
+            for title, rows in parsed:
+                group = Adw.PreferencesGroup(title=title)
+                for key, value in rows:
+                    group.add(self.detail_row(key, value, prop=True))
+                view.append(group)
+        elif idx == 3:
+            group = Adw.PreferencesGroup()
+            for head, body in parsed:
+                group.add(self.detail_row(head, body))
             view.append(group)
         else:
             for title, rows in parsed:

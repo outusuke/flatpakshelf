@@ -90,5 +90,25 @@ class PermissionTests(unittest.TestCase):
         self.assertNotIn("[Application]", kept)
 
 
+class DetailTabTests(unittest.TestCase):
+    def test_metadata(self):
+        text = "[Application]\nname=org.foo.Bar\nruntime=org.gnome.Platform/x86_64/47\n\n[Empty]\n"
+        self.assertEqual(d.parse_metadata(text), [("Application", [("name", "org.foo.Bar"),
+                                                                   ("runtime", "org.gnome.Platform/x86_64/47")])])
+        self.assertIsNone(d.parse_metadata("No metadata available."))
+
+    def test_changes_from_release_notes(self):
+        text = "47.0  2026-11-01\n  • Faster\n  • Fixes\n\n46.1  2026-05-02"
+        self.assertEqual(d.parse_changes(text), [("47.0  2026-11-01", "• Faster\n• Fixes"),
+                                                 ("46.1  2026-05-02", "")])
+
+    def test_changes_from_commit_log(self):
+        self.assertEqual(d.parse_changes(LOG)[0], ("Update to 47.0", "2026-11-20 10:00:00 +0000\nabc123"))
+
+    def test_changes_status_text(self):
+        for text in ("Loading…", "No update notes available.", ""):
+            self.assertIsNone(d.parse_changes(text))
+
+
 if __name__ == "__main__":
     unittest.main()

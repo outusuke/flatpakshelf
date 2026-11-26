@@ -106,6 +106,37 @@ def parse_permissions(text):
     return [(t, list(rows.values())) for t, rows in groups.items() if rows] or None
 
 
+CHANGE_HEAD = re.compile(r"^\S+\s{2}\d{4}-\d{2}-\d{2}$")
+
+
+def parse_metadata(text):
+    """[(section, [(key, value)])] from a metadata keyfile; None for status text."""
+    groups = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            groups.append((line[1:-1], []))
+        elif groups and "=" in line:
+            key, _, val = line.partition("=")
+            groups[-1][1].append((key, val))
+    return [g for g in groups if g[1]] or None
+
+
+def parse_changes(text):
+    """[(heading, body)] from release notes or a `remote-info --log` history; None otherwise."""
+    if "History:" in text:
+        entries = [(subject or commit[:12], f"{date}\n{commit[:12]}".strip())
+                   for commit, subject, date in parse_versions(text)]
+        return entries or None
+    entries = []
+    for block in text.split("\n\n"):
+        head, _, body = block.partition("\n")
+        if not CHANGE_HEAD.match(head):
+            return None
+        entries.append((head, "\n".join(ln.strip() for ln in body.splitlines())))
+    return entries
+
+
 def appstream_files(p):
     scopes = [p.scope] if p.installed else ["user", "system"]
     return [os.path.join(FLATPAK_ROOTS.get(sc, FLATPAK_ROOTS["system"]), "appstream", p.origin,

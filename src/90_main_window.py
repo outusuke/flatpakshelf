@@ -114,13 +114,9 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
 
         self.tab_views = []
         self.notebook = Gtk.Notebook(vexpand=True)
-        for idx, title in enumerate(TABS):
-            if idx < 2 or idx == SHOT_TAB:
-                tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
-                             margin_bottom=12, margin_start=12, margin_end=12)
-            else:
-                tv = Gtk.TextView(editable=False, monospace=True, left_margin=8, top_margin=8,
-                                  wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        for title in TABS:
+            tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
+                         margin_bottom=12, margin_start=12, margin_end=12)
             self.tab_views.append(tv)
             self.notebook.append_page(
                 Gtk.ScrolledWindow(vexpand=True, min_content_height=170, child=tv),

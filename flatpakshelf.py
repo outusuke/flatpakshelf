@@ -552,6 +552,37 @@ def parse_permissions(text):
     return [(t, list(rows.values())) for t, rows in groups.items() if rows] or None
 
 
+CHANGE_HEAD = re.compile(r"^\S+\s{2}\d{4}-\d{2}-\d{2}$")
+
+
+def parse_metadata(text):
+    """[(section, [(key, value)])] from a metadata keyfile; None for status text."""
+    groups = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            groups.append((line[1:-1], []))
+        elif groups and "=" in line:
+            key, _, val = line.partition("=")
+            groups[-1][1].append((key, val))
+    return [g for g in groups if g[1]] or None
+
+
+def parse_changes(text):
+    """[(heading, body)] from release notes or a `remote-info --log` history; None otherwise."""
+    if "History:" in text:
+        entries = [(subject or commit[:12], f"{date}\n{commit[:12]}".strip())
+                   for commit, subject, date in parse_versions(text)]
+        return entries or None
+    entries = []
+    for block in text.split("\n\n"):
+        head, _, body = block.partition("\n")
+        if not CHANGE_HEAD.match(head):
+            return None
+        entries.append((head, "\n".join(ln.strip() for ln in body.splitlines())))
+    return entries
+
+
 def appstream_files(p):
     scopes = [p.scope] if p.installed else ["user", "system"]
     return [os.path.join(FLATPAK_ROOTS.get(sc, FLATPAK_ROOTS["system"]), "appstream", p.origin,
@@ -1406,12 +1437,9 @@ class DetailsMixin:
         if idx == SHOT_TAB:
             self.show_shots(text)
             return
-        if idx >= 2:
-            view.get_buffer().set_text(text)
-            return
         while child := view.get_first_child():
             view.remove(child)
-        parsed = (parse_info, parse_permissions)[idx](text)
+        parsed = (parse_info, parse_permissions, parse_metadata, parse_changes)[idx](text)
         p = self.cur
         editable = p if p and p.installed and p.kind == "app" else None
         if parsed is None:  # status message such as "Loading…" or "No special permissions"
@@ -1434,6 +1462,17 @@ class DetailsMixin:
             group = Adw.PreferencesGroup()
             for key, value in rows:
                 group.add(self.detail_row(key, value, prop=True))
+            view.append(group)
+        elif idx == 2:
+            for title, rows in parsed:
+                group = Adw.PreferencesGroup(title=title)
+                for key, value in rows:
+                    group.add(self.detail_row(key, value, prop=True))
+                view.append(group)
+        elif idx == 3:
+            group = Adw.PreferencesGroup()
+            for head, body in parsed:
+                group.add(self.detail_row(head, body))
             view.append(group)
         else:
             for title, rows in parsed:
@@ -1564,13 +1603,9 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
 
         self.tab_views = []
         self.notebook = Gtk.Notebook(vexpand=True)
-        for idx, title in enumerate(TABS):
-            if idx < 2 or idx == SHOT_TAB:
-                tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
-                             margin_bottom=12, margin_start=12, margin_end=12)
-            else:
-                tv = Gtk.TextView(editable=False, monospace=True, left_margin=8, top_margin=8,
-                                  wrap_mode=Gtk.WrapMode.WORD_CHAR)
+        for title in TABS:
+            tv = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin_top=12,
+                         margin_bottom=12, margin_start=12, margin_end=12)
             self.tab_views.append(tv)
             self.notebook.append_page(
                 Gtk.ScrolledWindow(vexpand=True, min_content_height=170, child=tv),
