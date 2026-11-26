@@ -283,7 +283,7 @@ class RemotesWindow(Adw.Window):
             ("remote-delete", "--" + scope, name), f"Could not remove {name}"))
         dlg.present(self)
 
-    def ask_add(self):
+    def ask_add(self, location=""):
         name = Adw.EntryRow(title="Name")
         where = Adw.EntryRow(title="URL or .flatpakrepo file")
         scope = Adw.ComboRow(title="Installation", subtitle="System asks for your password",
@@ -347,4 +347,5 @@ class RemotesWindow(Adw.Window):
         name.connect("changed", check)
         where.connect("changed", fill_name)
         dlg.connect("response", respond)
+        where.set_text(location)
         dlg.present(self)

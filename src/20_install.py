@@ -9,10 +9,11 @@ DESKTOP_ENTRY = f"""[Desktop Entry]
 Type=Application
 Name=Flatpakshelf
 Comment=Synaptic-style Flatpak manager
-Exec={BIN_PATH}
+Exec={BIN_PATH} %f
 Icon=system-software-install
 Terminal=false
 DBusActivatable=true
+MimeType=application/vnd.flatpak.repo;
 Categories=System;PackageManager;GTK;
 StartupWMClass={APP_ID}
 """

@@ -105,10 +105,11 @@ DESKTOP_ENTRY = f"""[Desktop Entry]
 Type=Application
 Name=Flatpakshelf
 Comment=Synaptic-style Flatpak manager
-Exec={BIN_PATH}
+Exec={BIN_PATH} %f
 Icon=system-software-install
 Terminal=false
 DBusActivatable=true
+MimeType=application/vnd.flatpak.repo;
 Categories=System;PackageManager;GTK;
 StartupWMClass={APP_ID}
 """
@@ -1384,7 +1385,7 @@ class RemotesWindow(Adw.Window):
             ("remote-delete", "--" + scope, name), f"Could not remove {name}"))
         dlg.present(self)
 
-    def ask_add(self):
+    def ask_add(self, location=""):
         name = Adw.EntryRow(title="Name")
         where = Adw.EntryRow(title="URL or .flatpakrepo file")
         scope = Adw.ComboRow(title="Installation", subtitle="System asks for your password",
@@ -1448,6 +1449,7 @@ class RemotesWindow(Adw.Window):
         name.connect("changed", check)
         where.connect("changed", fill_name)
         dlg.connect("response", respond)
+        where.set_text(location)
         dlg.present(self)
 
 
@@ -2244,7 +2246,7 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
 
 class App(Adw.Application):
     def __init__(self):
-        super().__init__(application_id=APP_ID)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
         act = Gio.SimpleAction.new("open", None)
         act.connect("activate", lambda *_: self.activate())
         self.add_action(act)
@@ -2258,6 +2260,17 @@ class App(Adw.Application):
             self.activate()
             win = next(w for w in self.get_windows() if isinstance(w, Win))
         HistoryWindow(win, days=0).present()
+
+    def do_open(self, files, _n_files, _hint):
+        win = next((w for w in self.get_windows() if isinstance(w, Win)), None)
+        if not win:
+            self.activate()
+            win = next(w for w in self.get_windows() if isinstance(w, Win))
+        repo = next((f for f in files if (f.get_basename() or "").endswith(".flatpakrepo")), None)
+        if repo:
+            remotes = RemotesWindow(win)
+            remotes.present()
+            remotes.ask_add(repo.get_path() or repo.get_uri())
 
     def do_activate(self):
         # menu clicks and notification clicks all land here
@@ -2278,4 +2291,4 @@ if __name__ == "__main__":
     elif "--auto-update" in sys.argv[1:]:
         sys.exit(auto_update("--no-deploy" in sys.argv[1:]))
     else:
-        App().run(None)
+        App().run(sys.argv)
