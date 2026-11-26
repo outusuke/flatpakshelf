@@ -273,14 +273,17 @@ class RemotesWindow(Adw.Window):
         return False
 
     def ask_remove(self, scope, name):
-        dlg = Adw.AlertDialog(heading=f"Remove {name}?",
-                              body="It can only be removed when nothing is installed from it.")
+        used = [p for p in self.parent_win.all if p.installed and p.origin == name and p.scope == scope]
+        body = ("Nothing is installed from it." if not used else
+                f"{plural(len(used))} installed from it will be removed too:\n{names_summary(used)}")
+        dlg = Adw.AlertDialog(heading=f"Remove {name}?", body=body)
         dlg.add_response("cancel", "Cancel")
-        dlg.add_response("remove", "Remove")
+        dlg.add_response("remove", f"Remove with {plural(len(used))}" if used else "Remove")
         dlg.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
         dlg.set_close_response("cancel")
         dlg.connect("response", lambda _d, r: r == "remove" and self.run(
-            ("remote-delete", "--" + scope, name), f"Could not remove {name}"))
+            ("remote-delete", "--" + scope, *(["--force"] if used else []), name),
+            f"Could not remove {name}"))
         dlg.present(self)
 
     def ask_add(self, location=""):
