@@ -112,10 +112,16 @@ class DetailTabTests(unittest.TestCase):
 
 class RemoteTests(unittest.TestCase):
     def test_remotes(self):
-        out = "flathub\tFlathub\thttps://dl.flathub.org/repo/\tsystem\nold\t\thttps://x.test/\tsystem,disabled\n"
-        self.assertEqual(d.parse_remotes(out, "system"),
-                         [("system", "flathub", "Flathub", "https://dl.flathub.org/repo/", True),
-                          ("system", "old", "", "https://x.test/", False)])
+        out = ("Name\tTitle\tURL\tOptions\n"
+               "fedora\tFedora Flatpaks\toci+https://registry.fedoraproject.org\tsystem,disabled,oci\n"
+               "flathub\tFlathub\thttps://dl.flathub.org/repo/\tsystem\n"
+               "chrome-origin\t-\thttps://dl.flathub.org/build-repo/288757\tsystem,no-enumerate\n"
+               "desktop-origin\torg.kiwix.desktop.2.5.1.flatpak\t\tsystem,disabled,no-enumerate\n")
+        self.assertEqual(d.parse_remotes(out, "system"), [
+            ("system", "fedora", "Fedora Flatpaks", "oci+https://registry.fedoraproject.org", False),
+            ("system", "flathub", "Flathub", "https://dl.flathub.org/repo/", True),
+            ("system", "chrome-origin", "", "https://dl.flathub.org/build-repo/288757", True),
+            ("system", "desktop-origin", "org.kiwix.desktop.2.5.1.flatpak", "", False)])
         self.assertEqual(d.parse_remotes("", "user"), [])
 
 

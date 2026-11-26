@@ -115,10 +115,10 @@ def parse_remotes(out, scope):
     """[(scope, name, title, url, enabled)] from `flatpak remotes --columns=name,title,url,options`."""
     rows = []
     for line in out.splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 4 and parts[0].strip():
-            rows.append((scope, parts[0].strip(), parts[1].strip(), parts[2].strip(),
-                         "disabled" not in parts[3]))
+        parts = [x.strip() for x in line.split("\t")]
+        if len(parts) >= 4 and parts[0] and parts[3] != "Options":
+            title = "" if parts[1] == "-" else parts[1]
+            rows.append((scope, parts[0], title, parts[2], "disabled" not in parts[3].split(",")))
     return rows
 
 
