@@ -28,6 +28,3 @@ in `00_header.py` and the built file is the only thing you run.
 | `99_app.py` | `App` and the command-line entry point |
 
 To audit what can change the system, read `20`, `60` and `70`. Nothing below `80` draws a widget.
-
-`tools/verify_split.py` compares the built file with an older revision (AST, lines, bytecode and
-a side-by-side run with a fake `flatpak`). It is how the split was checked.
