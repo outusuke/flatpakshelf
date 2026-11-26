@@ -137,6 +137,14 @@ def valid_remote_location(text):
         text.endswith(".flatpakrepo") and os.path.isfile(text))
 
 
+def parse_flatpakref(text):
+    """Name, Title, Branch, Url and IsRuntime of a .flatpakref, or None if it is not one."""
+    if "[Flatpak Ref]" not in text:
+        return None
+    info = {k: v.strip() for k, v in re.findall(r"^(Name|Title|Branch|Url|IsRuntime)=(.*)$", text, re.M)}
+    return info if info.get("Name") else None
+
+
 def default_remote_name(location):
     """flathub for https://dl.flathub.org/repo/..., the file stem for a local file."""
     host = re.match(r"[a-z][a-z0-9+.-]*://(?:[^/@]*@)?([^/:]+)", location)

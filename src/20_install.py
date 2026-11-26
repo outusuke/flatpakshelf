@@ -13,7 +13,7 @@ Exec={BIN_PATH} %f
 Icon=system-software-install
 Terminal=false
 DBusActivatable=true
-MimeType=application/vnd.flatpak.repo;
+MimeType=application/vnd.flatpak.repo;application/vnd.flatpak.ref;
 Categories=System;PackageManager;GTK;
 StartupWMClass={APP_ID}
 """

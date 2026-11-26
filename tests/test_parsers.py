@@ -130,6 +130,14 @@ class RemoteTests(unittest.TestCase):
         for bad in ("", "flathub", "dl.flathub.org/repo", "/no/such/x.flatpakrepo", "https://"):
             self.assertFalse(d.valid_remote_location(bad), bad)
 
+    def test_parse_flatpakref(self):
+        ref = ("[Flatpak Ref]\nTitle=DuckStation\nName=org.duckstation.DuckStation\nBranch=stable\n"
+               "Url=https://dl.flathub.org/repo/\nIsRuntime=false\nGPGKey=AAAA==\n")
+        self.assertEqual(d.parse_flatpakref(ref), {"Title": "DuckStation", "Name": "org.duckstation.DuckStation",
+                         "Branch": "stable", "Url": "https://dl.flathub.org/repo/", "IsRuntime": "false"})
+        self.assertIsNone(d.parse_flatpakref("[Flatpak Repo]\nTitle=x\n"))
+        self.assertIsNone(d.parse_flatpakref("[Flatpak Ref]\nBranch=stable\n"))
+
     def test_default_remote_name(self):
         for loc, want in (("https://dl.flathub.org/repo/flathub.flatpakrepo", "flathub"),
                           ("oci+https://registry.fedoraproject.org", "fedoraproject"),

@@ -530,6 +530,26 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         if len(sel) == 1 and os.path.isdir(data_dir(sel[0])):
             Gtk.FileLauncher.new(Gio.File.new_for_path(data_dir(sel[0]))).launch(self, None, None)
 
+    def ask_install_ref(self, location, info):
+        title = info.get("Title") or info["Name"]
+        drop = Gtk.DropDown.new_from_strings(["For this user only",
+                                              "System-wide (asks for authorization)"])
+        dlg = Adw.AlertDialog(heading=f"Install {title}?", body=info["Name"])
+        dlg.set_extra_child(drop)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("install", "Install")
+        dlg.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("install")
+        dlg.set_close_response("cancel")
+
+        def done(_d, resp):
+            if resp == "install":
+                scope = ("--user", "--system")[drop.get_selected()]
+                self.run_batch([("install", "--from", location, "-y", scope)], f"Installed {title}")
+
+        dlg.connect("response", done)
+        dlg.present(self)
+
     def run_batch(self, cmds, ok_msg):
         self.set_busy(True)
         self.spin.start()

@@ -109,7 +109,7 @@ Exec={BIN_PATH} %f
 Icon=system-software-install
 Terminal=false
 DBusActivatable=true
-MimeType=application/vnd.flatpak.repo;
+MimeType=application/vnd.flatpak.repo;application/vnd.flatpak.ref;
 Categories=System;PackageManager;GTK;
 StartupWMClass={APP_ID}
 """
@@ -278,6 +278,14 @@ def valid_remote_location(text):
     """A URL with a scheme, or an existing .flatpakrepo file."""
     return bool(re.match(r"[a-z][a-z0-9+.-]*://\S+$", text)) or (
         text.endswith(".flatpakrepo") and os.path.isfile(text))
+
+
+def parse_flatpakref(text):
+    """Name, Title, Branch, Url and IsRuntime of a .flatpakref, or None if it is not one."""
+    if "[Flatpak Ref]" not in text:
+        return None
+    info = {k: v.strip() for k, v in re.findall(r"^(Name|Title|Branch|Url|IsRuntime)=(.*)$", text, re.M)}
+    return info if info.get("Name") else None
 
 
 def default_remote_name(location):
@@ -2213,6 +2221,26 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         if len(sel) == 1 and os.path.isdir(data_dir(sel[0])):
             Gtk.FileLauncher.new(Gio.File.new_for_path(data_dir(sel[0]))).launch(self, None, None)
 
+    def ask_install_ref(self, location, info):
+        title = info.get("Title") or info["Name"]
+        drop = Gtk.DropDown.new_from_strings(["For this user only",
+                                              "System-wide (asks for authorization)"])
+        dlg = Adw.AlertDialog(heading=f"Install {title}?", body=info["Name"])
+        dlg.set_extra_child(drop)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("install", "Install")
+        dlg.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("install")
+        dlg.set_close_response("cancel")
+
+        def done(_d, resp):
+            if resp == "install":
+                scope = ("--user", "--system")[drop.get_selected()]
+                self.run_batch([("install", "--from", location, "-y", scope)], f"Installed {title}")
+
+        dlg.connect("response", done)
+        dlg.present(self)
+
     def run_batch(self, cmds, ok_msg):
         self.set_busy(True)
         self.spin.start()
@@ -2266,11 +2294,21 @@ class App(Adw.Application):
         if not win:
             self.activate()
             win = next(w for w in self.get_windows() if isinstance(w, Win))
-        repo = next((f for f in files if (f.get_basename() or "").endswith(".flatpakrepo")), None)
-        if repo:
+        f = files[0]
+        name, where = f.get_basename() or "", f.get_path() or f.get_uri()
+        if name.endswith(".flatpakrepo"):
             remotes = RemotesWindow(win)
             remotes.present()
-            remotes.ask_add(repo.get_path() or repo.get_uri())
+            remotes.ask_add(where)
+        elif name.endswith(".flatpakref"):
+            try:
+                info = parse_flatpakref(f.load_contents(None)[1].decode("utf-8", "replace"))
+            except GLib.Error:
+                info = None
+            if info:
+                win.ask_install_ref(where, info)
+            else:
+                win.toast(f"Could not read {name}")
 
     def do_activate(self):
         # menu clicks and notification clicks all land here

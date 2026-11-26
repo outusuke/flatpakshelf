@@ -20,11 +20,21 @@ class App(Adw.Application):
         if not win:
             self.activate()
             win = next(w for w in self.get_windows() if isinstance(w, Win))
-        repo = next((f for f in files if (f.get_basename() or "").endswith(".flatpakrepo")), None)
-        if repo:
+        f = files[0]
+        name, where = f.get_basename() or "", f.get_path() or f.get_uri()
+        if name.endswith(".flatpakrepo"):
             remotes = RemotesWindow(win)
             remotes.present()
-            remotes.ask_add(repo.get_path() or repo.get_uri())
+            remotes.ask_add(where)
+        elif name.endswith(".flatpakref"):
+            try:
+                info = parse_flatpakref(f.load_contents(None)[1].decode("utf-8", "replace"))
+            except GLib.Error:
+                info = None
+            if info:
+                win.ask_install_ref(where, info)
+            else:
+                win.toast(f"Could not read {name}")
 
     def do_activate(self):
         # menu clicks and notification clicks all land here
