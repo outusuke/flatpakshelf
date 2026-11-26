@@ -130,6 +130,12 @@ class RemoteTests(unittest.TestCase):
         for bad in ("", "flathub", "dl.flathub.org/repo", "/no/such/x.flatpakrepo", "https://"):
             self.assertFalse(d.valid_remote_location(bad), bad)
 
+    def test_filter_by_origin(self):
+        from types import SimpleNamespace as P
+        rows = [P(origin="flathub", installed=True, hay="a"), P(origin="fedora", installed=True, hay="b")]
+        self.assertEqual(d.filter_rows(rows, 0, "", 0, "fedora"), [rows[1]])
+        self.assertIs(d.filter_rows(rows, 0, ""), rows)
+
     def test_parse_flatpakref(self):
         ref = ("[Flatpak Ref]\nTitle=DuckStation\nName=org.duckstation.DuckStation\nBranch=stable\n"
                "Url=https://dl.flathub.org/repo/\nIsRuntime=false\nGPGKey=AAAA==\n")

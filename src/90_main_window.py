@@ -25,6 +25,11 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         self.mode.set_selected(MODES.index("Installed"))
         self.mode.connect("notify::selected", lambda *_: self.refilter())
         hb.pack_start(self.mode)
+        self.origin = Gtk.DropDown.new_from_strings([ALL_REMOTES])
+        self.origin.set_visible(False)
+        self.origin.connect("notify::selected", lambda *_: self.on_origin())
+        self.origin_name, self.syncing_origin = "", False
+        hb.pack_start(self.origin)
         self.reload_btn = Gtk.Button(icon_name="view-refresh-symbolic",
                                      tooltip_text="Reload package list from the remotes")
         self.reload_btn.connect("clicked", lambda *_: self.reload())
@@ -282,6 +287,7 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         if gen != self.gen:
             return False
         self.all = objs
+        self.update_origins(objs)
         self.n_upg = sum(p.upgradable for p in objs)
         self.apply_data()
         self.sort_all()
@@ -316,8 +322,27 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         get = operator.attrgetter(self.sort_prop)
         self.all.sort(key=lambda p: get(p).casefold(), reverse=self.sort_desc)
 
+    def update_origins(self, objs):
+        names = sorted({p.origin for p in objs if p.origin})
+        labels = [ALL_REMOTES, *names]
+        self.syncing_origin = True
+        self.origin.set_model(Gtk.StringList.new(labels))
+        if self.origin_name not in names:
+            self.origin_name = ""
+        self.origin.set_selected(labels.index(self.origin_name or ALL_REMOTES))
+        self.origin.set_visible(len(names) > 1)
+        self.syncing_origin = False
+
+    def on_origin(self):
+        if self.syncing_origin:
+            return
+        item = self.origin.get_selected_item()
+        self.origin_name = "" if self.origin.get_selected() == 0 or item is None else item.get_string()
+        self.refilter()
+
     def refilter(self):
-        rows = filter_rows(self.all, self.mode.get_selected(), self.query, self.search_idx)
+        rows = filter_rows(self.all, self.mode.get_selected(), self.query, self.search_idx,
+                           self.origin_name)
         if rows is self.all:
             rows = list(rows)
         self.model.set_rows(rows)

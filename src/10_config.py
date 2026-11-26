@@ -22,6 +22,7 @@ REMOTE_COLS = ("ref", "application", "name", "version", "branch", "arch", "origi
                "description", "installed-size")
 SIZE_UNITS = {"bytes": 1, "byte": 1, "kB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12}
 FLATHUB_REPO = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+ALL_REMOTES = "All remotes"
 MODES = ["All", "Installed", "Not installed", "Applications", "Runtimes", "Upgradable"]
 UNIT_DIR = os.path.join(GLib.get_user_config_dir(), "systemd", "user")
 AUTO_TIMER = "flatpakshelf-update.timer"

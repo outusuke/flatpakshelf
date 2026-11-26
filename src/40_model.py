@@ -43,7 +43,7 @@ def search_rows(rows, query, how):
     return [p for p in rows if query in p.hay]
 
 
-def filter_rows(rows, mode, query, how=0):
+def filter_rows(rows, mode, query, how=0, origin=""):
     """Mode and search filter in plain Python. `query` must be lower case."""
     if mode == 1:
         rows = [p for p in rows if p.installed]
@@ -55,6 +55,8 @@ def filter_rows(rows, mode, query, how=0):
         rows = [p for p in rows if p.kind == "runtime"]
     elif mode == 5:
         rows = [p for p in rows if p.upgradable]
+    if origin:
+        rows = [p for p in rows if p.origin == origin]
     if query:
         rows = search_rows(rows, query, how)
     return rows
