@@ -137,6 +137,17 @@ def valid_remote_location(text):
         text.endswith(".flatpakrepo") and os.path.isfile(text))
 
 
+def default_remote_name(location):
+    """flathub for https://dl.flathub.org/repo/..., the file stem for a local file."""
+    host = re.match(r"[a-z][a-z0-9+.-]*://(?:[^/@]*@)?([^/:]+)", location)
+    if host:
+        labels = host.group(1).split(".")
+        guess = labels[-2] if len(labels) > 1 else labels[0]
+    else:
+        guess = os.path.basename(location).removesuffix(".flatpakrepo")
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", guess)
+
+
 def enabled_remote_names(scope):
     """Names of the enabled remotes of one scope option such as --user."""
     _rc, out = flatpak("remotes", scope, "--columns=name,title,url,options")

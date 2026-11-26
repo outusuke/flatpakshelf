@@ -279,6 +279,17 @@ def valid_remote_location(text):
         text.endswith(".flatpakrepo") and os.path.isfile(text))
 
 
+def default_remote_name(location):
+    """flathub for https://dl.flathub.org/repo/..., the file stem for a local file."""
+    host = re.match(r"[a-z][a-z0-9+.-]*://(?:[^/@]*@)?([^/:]+)", location)
+    if host:
+        labels = host.group(1).split(".")
+        guess = labels[-2] if len(labels) > 1 else labels[0]
+    else:
+        guess = os.path.basename(location).removesuffix(".flatpakrepo")
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", guess)
+
+
 def enabled_remote_names(scope):
     """Names of the enabled remotes of one scope option such as --user."""
     _rc, out = flatpak("remotes", scope, "--columns=name,title,url,options")
@@ -1376,21 +1387,40 @@ class RemotesWindow(Adw.Window):
     def ask_add(self):
         name = Adw.EntryRow(title="Name")
         where = Adw.EntryRow(title="URL or .flatpakrepo file")
-        scope = Adw.ComboRow(title="Installation", model=Gtk.StringList.new(["User", "System"]))
+        scope = Adw.ComboRow(title="Installation", subtitle="System asks for your password",
+                             model=Gtk.StringList.new(["User", "System"]))
         form = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
-        for w in (name, where, scope):
+        for w in (where, name, scope):
             form.append(w)
+        hint = Gtk.Label(xalign=0, wrap=True, css_classes=["caption", "error"], visible=False,
+                         label="Use a URL such as https://\u2026 or an existing .flatpakrepo file")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.append(form)
+        box.append(hint)
         dlg = Adw.AlertDialog(heading="Add a remote")
-        dlg.set_extra_child(form)
+        dlg.set_extra_child(box)
         dlg.add_response("cancel", "Cancel")
         dlg.add_response("add", "Add")
         dlg.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
         dlg.set_response_enabled("add", False)
         dlg.set_close_response("cancel")
 
+        guessed = [""]
+
         def check(*_):
-            dlg.set_response_enabled("add", bool(name.get_text().strip()
-                                                 and valid_remote_location(where.get_text().strip())))
+            loc = where.get_text().strip()
+            ok = valid_remote_location(loc)
+            bad = bool(loc) and not ok
+            hint.set_visible(bad)
+            (where.add_css_class if bad else where.remove_css_class)("error")
+            dlg.set_response_enabled("add", bool(ok and name.get_text().strip()))
+
+        def fill_name(*_):
+            guess = default_remote_name(where.get_text().strip())
+            if guess and name.get_text().strip() in ("", guessed[0]):  # leave a name the user typed
+                guessed[0] = guess
+                name.set_text(guess)
+            check()
 
         def picked(fd, res):
             try:
@@ -1398,8 +1428,6 @@ class RemotesWindow(Adw.Window):
             except GLib.Error:
                 return
             where.set_text(path)
-            if not name.get_text().strip():
-                name.set_text(os.path.basename(path).removesuffix(".flatpakrepo"))
 
         def choose(*_):
             only = Gtk.FileFilter(name="Flatpak repositories")
@@ -1418,7 +1446,7 @@ class RemotesWindow(Adw.Window):
                          "Could not add the remote")
 
         name.connect("changed", check)
-        where.connect("changed", check)
+        where.connect("changed", fill_name)
         dlg.connect("response", respond)
         dlg.present(self)
 

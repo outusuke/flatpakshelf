@@ -130,6 +130,13 @@ class RemoteTests(unittest.TestCase):
         for bad in ("", "flathub", "dl.flathub.org/repo", "/no/such/x.flatpakrepo", "https://"):
             self.assertFalse(d.valid_remote_location(bad), bad)
 
+    def test_default_remote_name(self):
+        for loc, want in (("https://dl.flathub.org/repo/flathub.flatpakrepo", "flathub"),
+                          ("oci+https://registry.fedoraproject.org", "fedoraproject"),
+                          ("http://localhost:8080/repo", "localhost"),
+                          ("/home/u/Downloads/gnome-nightly.flatpakrepo", "gnome-nightly")):
+            self.assertEqual(d.default_remote_name(loc), want, loc)
+
     def test_enabled_remote_names_skips_header_and_disabled(self):
         out = ("Name\tTitle\tURL\tOptions\n"
                "flathub\tFlathub\thttps://dl.flathub.org/repo/\tuser\n"
