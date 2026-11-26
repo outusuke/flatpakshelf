@@ -1334,9 +1334,7 @@ class RemotesWindow(Adw.Window):
         add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add a remote")
         add.connect("clicked", lambda *_: self.ask_add())
         self.flathub_btn = Gtk.Button(label="Add Flathub", visible=False)
-        self.flathub_btn.connect("clicked", lambda *_: self.run(
-            ("remote-add", "--if-not-exists", "--user", "flathub", FLATHUB_REPO),
-            "Could not add Flathub"))
+        self.flathub_btn.connect("clicked", lambda *_: self.ask_flathub())
         hb = Adw.HeaderBar()
         hb.pack_start(add)
         hb.pack_start(self.flathub_btn)
@@ -1405,6 +1403,21 @@ class RemotesWindow(Adw.Window):
         dlg.connect("response", lambda _d, r: r == "remove" and self.run(
             ("remote-delete", "--" + scope, *(["--force"] if used else []), name),
             f"Could not remove {name}"))
+        dlg.present(self)
+
+    def ask_flathub(self):
+        drop = Gtk.DropDown.new_from_strings(["For this user only",
+                                              "System-wide (asks for authorization)"])
+        dlg = Adw.AlertDialog(heading="Add Flathub?", body="The main Flatpak app store.")
+        dlg.set_extra_child(drop)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("add", "Add")
+        dlg.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("add")
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "add" and self.run(
+            ("remote-add", "--" + ("user", "system")[drop.get_selected()], "flathub", FLATHUB_REPO),
+            "Could not add Flathub"))
         dlg.present(self)
 
     def ask_add(self, location=""):
