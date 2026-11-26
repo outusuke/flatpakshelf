@@ -303,7 +303,7 @@ class RemotesWindow(Adw.Window):
 
         def respond(_d, r):
             if r == "add":
-                self.run(("remote-add", "--if-not-exists", "--" + ("user", "system")[scope.get_selected()],
+                self.run(("remote-add", "--" + ("user", "system")[scope.get_selected()],
                           name.get_text().strip(), where.get_text().strip()),
                          "Could not add the remote")
 

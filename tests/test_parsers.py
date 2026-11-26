@@ -124,6 +124,17 @@ class RemoteTests(unittest.TestCase):
             ("system", "desktop-origin", "org.kiwix.desktop.2.5.1.flatpak", "", False)])
         self.assertEqual(d.parse_remotes("", "user"), [])
 
+    def test_enabled_remote_names_skips_header_and_disabled(self):
+        out = ("Name\tTitle\tURL\tOptions\n"
+               "flathub\tFlathub\thttps://dl.flathub.org/repo/\tuser\n"
+               "old\t-\thttps://x.test/\tuser,disabled\n")
+        real = d.flatpak
+        d.flatpak = lambda *a, **k: (0, out)
+        try:
+            self.assertEqual(d.enabled_remote_names("--user"), ["flathub"])
+        finally:
+            d.flatpak = real
+
 
 if __name__ == "__main__":
     unittest.main()

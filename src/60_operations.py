@@ -16,8 +16,7 @@ def flatpak_op(*args):
 
 def remote_names(scope):
     """Names of the enabled remotes of one installation ('user' or 'system')."""
-    _rc, out = flatpak("remotes", "--" + scope)
-    return {line.split("\t")[0].strip() for line in out.splitlines() if line.strip()}
+    return set(enabled_remote_names("--" + scope))
 
 
 Tx = namedtuple("Tx", "action scope refs origin commit delete_data",

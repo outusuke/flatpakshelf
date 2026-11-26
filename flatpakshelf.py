@@ -273,11 +273,16 @@ def list_remotes():
     return rows
 
 
+def enabled_remote_names(scope):
+    """Names of the enabled remotes of one scope option such as --user."""
+    _rc, out = flatpak("remotes", scope, "--columns=name,title,url,options")
+    return [r[1] for r in parse_remotes(out, scope) if r[4]]
+
+
 def list_updates(scope):
     """(id, arch, branch) of every installed ref in one scope that has an update."""
-    _rc, names = flatpak("remotes", scope, "--columns=name")
     found = set()
-    for remote in names.split():  # one broken remote makes remote-ls fail for the whole scope
+    for remote in enabled_remote_names(scope):  # one broken remote makes remote-ls fail for the whole scope
         _rc, out = flatpak("remote-ls", scope, remote, "--updates",
                            "--columns=ref,application,branch,arch,origin")
         found |= {(i, a, b) for _ref, i, b, a, _o in parse_rows(out, 5)}
@@ -766,8 +771,7 @@ def flatpak_op(*args):
 
 def remote_names(scope):
     """Names of the enabled remotes of one installation ('user' or 'system')."""
-    _rc, out = flatpak("remotes", "--" + scope)
-    return {line.split("\t")[0].strip() for line in out.splitlines() if line.strip()}
+    return set(enabled_remote_names("--" + scope))
 
 
 Tx = namedtuple("Tx", "action scope refs origin commit delete_data",
@@ -1383,7 +1387,7 @@ class RemotesWindow(Adw.Window):
 
         def respond(_d, r):
             if r == "add":
-                self.run(("remote-add", "--if-not-exists", "--" + ("user", "system")[scope.get_selected()],
+                self.run(("remote-add", "--" + ("user", "system")[scope.get_selected()],
                           name.get_text().strip(), where.get_text().strip()),
                          "Could not add the remote")
 
