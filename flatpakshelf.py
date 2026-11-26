@@ -115,6 +115,15 @@ StartupWMClass={APP_ID}
 """
 
 
+def refresh_mime_cache():
+    """File managers only offer an app for a MimeType after this cache is rebuilt."""
+    try:
+        subprocess.run(["update-desktop-database", os.path.dirname(DESKTOP_PATH)],
+                       capture_output=True)
+    except OSError:
+        pass
+
+
 def install_self():
     os.makedirs(os.path.dirname(BIN_PATH), exist_ok=True)
     os.makedirs(os.path.dirname(DESKTOP_PATH), exist_ok=True)
@@ -129,6 +138,7 @@ def install_self():
     # lets a notification click start the app when it is not running
     with open(DBUS_SERVICE_PATH, "w") as f:
         f.write(DBUS_SERVICE)
+    refresh_mime_cache()
     print(f"Installed {BIN_PATH}, {DESKTOP_PATH} and {DBUS_SERVICE_PATH}")
 
 
@@ -138,6 +148,7 @@ def uninstall_self():
             os.remove(path)
         except FileNotFoundError:
             pass
+    refresh_mime_cache()
     print("Removed menu entry and binary")
 
 
