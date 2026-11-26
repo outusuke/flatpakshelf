@@ -111,6 +111,26 @@ def parse_versions(out):
     return [tuple(r) for r in rows]
 
 
+def parse_remotes(out, scope):
+    """[(scope, name, title, url, enabled)] from `flatpak remotes --columns=name,title,url,options`."""
+    rows = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 4 and parts[0].strip():
+            rows.append((scope, parts[0].strip(), parts[1].strip(), parts[2].strip(),
+                         "disabled" not in parts[3]))
+    return rows
+
+
+def list_remotes():
+    rows = []
+    for scope in ("user", "system"):
+        _rc, out = flatpak("remotes", "--" + scope, "--show-disabled",
+                           "--columns=name,title,url,options")
+        rows += parse_remotes(out, scope)
+    return rows
+
+
 def list_updates(scope):
     """(id, arch, branch) of every installed ref in one scope that has an update."""
     _rc, names = flatpak("remotes", scope, "--columns=name")

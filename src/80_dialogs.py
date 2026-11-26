@@ -198,3 +198,116 @@ class AutoUpdatesWindow(Adw.Window):
             GLib.idle_add(win.toast, f"Failed: {err}" if err else "Automatic updates saved")
 
         threading.Thread(target=work, daemon=True).start()
+
+
+class RemotesWindow(Adw.Window):
+    def __init__(self, parent):
+        super().__init__(transient_for=parent, modal=True, title="Remotes",
+                         default_width=640, default_height=520)
+        self.parent_win, self.changed = parent, False
+        self.placeholder = Adw.StatusPage(title="Loading\u2026", css_classes=["compact"])
+        self.box = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"],
+                               margin_top=12, margin_bottom=12, margin_start=12, margin_end=12,
+                               valign=Gtk.Align.START)
+        self.box.set_placeholder(self.placeholder)
+        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add a remote")
+        add.connect("clicked", lambda *_: self.ask_add())
+        self.flathub_btn = Gtk.Button(label="Add Flathub", visible=False)
+        self.flathub_btn.connect("clicked", lambda *_: self.run(
+            ("remote-add", "--if-not-exists", "--user", "flathub", FLATHUB_REPO),
+            "Could not add Flathub"))
+        hb = Adw.HeaderBar()
+        hb.pack_start(add)
+        hb.pack_start(self.flathub_btn)
+        tb = Adw.ToolbarView()
+        tb.add_top_bar(hb)
+        tb.set_content(Gtk.ScrolledWindow(vexpand=True, child=self.box))
+        self.set_content(tb)
+        self.connect("close-request", self._closing)
+        self.load()
+
+    def _closing(self, *_):
+        if self.changed:
+            self.parent_win.reload()
+        return False
+
+    def load(self):
+        threading.Thread(target=lambda: GLib.idle_add(self.show, list_remotes()),
+                         daemon=True).start()
+
+    def show(self, rows):
+        self.box.remove_all()
+        self.placeholder.set_title("No remotes configured")
+        self.flathub_btn.set_visible(not any(r[1] == "flathub" for r in rows))
+        for scope, name, title, url, enabled in rows:
+            row = Adw.SwitchRow(title=name, active=enabled, use_markup=False,
+                                subtitle=" \u00b7 ".join(x for x in (title, scope, url) if x))
+            row.connect("notify::active", lambda r, _p, s=scope, n=name: self.run(
+                ("remote-modify", "--enable" if r.get_active() else "--disable", "--" + s, n),
+                f"Could not change {n}"))
+            trash = Gtk.Button(icon_name="user-trash-symbolic", valign=Gtk.Align.CENTER,
+                               css_classes=["flat"], tooltip_text="Remove remote")
+            trash.connect("clicked", lambda _b, s=scope, n=name: self.ask_remove(s, n))
+            row.add_suffix(trash)
+            self.box.append(row)
+        return False
+
+    def run(self, args, failure):
+        self.set_sensitive(False)
+
+        def work():
+            rc, msg = flatpak_op(*args)
+            GLib.idle_add(self.done, rc, msg, failure)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def done(self, rc, msg, failure):
+        self.set_sensitive(True)
+        if rc:
+            dlg = Adw.AlertDialog(heading=failure, body=msg or "flatpak reported an error.")
+            dlg.add_response("ok", "OK")
+            dlg.present(self)
+        else:
+            self.changed = True
+        self.load()
+        return False
+
+    def ask_remove(self, scope, name):
+        dlg = Adw.AlertDialog(heading=f"Remove {name}?",
+                              body="It can only be removed when nothing is installed from it.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("remove", "Remove")
+        dlg.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "remove" and self.run(
+            ("remote-delete", "--" + scope, name), f"Could not remove {name}"))
+        dlg.present(self)
+
+    def ask_add(self):
+        name = Adw.EntryRow(title="Name")
+        where = Adw.EntryRow(title="URL or .flatpakrepo file")
+        scope = Adw.ComboRow(title="Installation", model=Gtk.StringList.new(["User", "System"]))
+        form = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, css_classes=["boxed-list"])
+        for w in (name, where, scope):
+            form.append(w)
+        dlg = Adw.AlertDialog(heading="Add a remote")
+        dlg.set_extra_child(form)
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("add", "Add")
+        dlg.set_response_appearance("add", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_response_enabled("add", False)
+        dlg.set_close_response("cancel")
+
+        def check(*_):
+            dlg.set_response_enabled("add", bool(name.get_text().strip() and where.get_text().strip()))
+
+        def respond(_d, r):
+            if r == "add":
+                self.run(("remote-add", "--if-not-exists", "--" + ("user", "system")[scope.get_selected()],
+                          name.get_text().strip(), where.get_text().strip()),
+                         "Could not add the remote")
+
+        name.connect("changed", check)
+        where.connect("changed", check)
+        dlg.connect("response", respond)
+        dlg.present(self)

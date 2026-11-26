@@ -110,5 +110,14 @@ class DetailTabTests(unittest.TestCase):
             self.assertIsNone(d.parse_changes(text))
 
 
+class RemoteTests(unittest.TestCase):
+    def test_remotes(self):
+        out = "flathub\tFlathub\thttps://dl.flathub.org/repo/\tsystem\nold\t\thttps://x.test/\tsystem,disabled\n"
+        self.assertEqual(d.parse_remotes(out, "system"),
+                         [("system", "flathub", "Flathub", "https://dl.flathub.org/repo/", True),
+                          ("system", "old", "", "https://x.test/", False)])
+        self.assertEqual(d.parse_remotes("", "user"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

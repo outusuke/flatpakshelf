@@ -30,6 +30,8 @@ Menu, Recent changes lists installs, updates and removals from `flatpak history`
 
 Pause updates stops updates for one installed package with `flatpak mask`; Resume updates removes the mask. Change version lists older commits from `flatpak remote-info --log` and installs the one you pick with `flatpak update --commit`, and can pause updates so it stays.
 
+Menu, Remotes lists the remotes of both installations. Switch one on or off, remove it (only possible when nothing is installed from it), or add one by URL or `.flatpakrepo` file. Add Flathub appears while no remote is named `flathub`.
+
 ## License
 
 GPL-3.0-or-later

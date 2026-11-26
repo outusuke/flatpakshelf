@@ -34,6 +34,7 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Remove unused runtimes", "win.remove-unused")
         menu.append("Automatic updates", "win.auto-updates")
+        menu.append("Remotes", "win.remotes")
         menu.append("Recent changes", "win.history")
         self.app_menu = menu
         menu.append(self.entry_label(), "win.toggle-menu-entry")
@@ -46,6 +47,9 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         self.add_action(act)
         act = Gio.SimpleAction.new("auto-updates", None)
         act.connect("activate", lambda *_: AutoUpdatesWindow(self).present())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("remotes", None)
+        act.connect("activate", lambda *_: RemotesWindow(self).present())
         self.add_action(act)
         act = Gio.SimpleAction.new("toggle-menu-entry", None)
         act.connect("activate", lambda *_: self.toggle_menu_entry())
