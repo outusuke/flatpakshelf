@@ -49,6 +49,17 @@ def user_data_sizes(found):
         list(ex.map(one, dirs))
 
 
+def leftover_data_dirs(installed_ids, root=None):
+    """App ids with a folder in ~/.var/app but no installed package."""
+    root = root or os.path.expanduser("~/.var/app")
+    try:
+        return sorted(e.name for e in os.scandir(root)
+                      if e.is_dir(follow_symlinks=False) and "." in e.name
+                      and e.name not in installed_ids)
+    except OSError:
+        return []
+
+
 def read_data_cache():
     try:
         with open(DATA_CACHE) as f:

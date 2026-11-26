@@ -130,6 +130,15 @@ class RemoteTests(unittest.TestCase):
         for bad in ("", "flathub", "dl.flathub.org/repo", "/no/such/x.flatpakrepo", "https://"):
             self.assertFalse(d.valid_remote_location(bad), bad)
 
+    def test_leftover_data_dirs(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            for n in ("org.kept.App", "org.gone.App", "notanid"):
+                os.mkdir(os.path.join(root, n))
+            open(os.path.join(root, "org.file.App"), "w").close()
+            self.assertEqual(d.leftover_data_dirs({"org.kept.App"}, root), ["org.gone.App"])
+        self.assertEqual(d.leftover_data_dirs(set(), "/no/such/dir"), [])
+
     def test_filter_by_origin(self):
         from types import SimpleNamespace as P
         rows = [P(origin="flathub", installed=True, hay="a"), P(origin="fedora", installed=True, hay="b")]

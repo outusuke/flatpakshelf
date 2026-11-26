@@ -204,6 +204,17 @@ def user_data_sizes(found):
         list(ex.map(one, dirs))
 
 
+def leftover_data_dirs(installed_ids, root=None):
+    """App ids with a folder in ~/.var/app but no installed package."""
+    root = root or os.path.expanduser("~/.var/app")
+    try:
+        return sorted(e.name for e in os.scandir(root)
+                      if e.is_dir(follow_symlinks=False) and "." in e.name
+                      and e.name not in installed_ids)
+    except OSError:
+        return []
+
+
 def read_data_cache():
     try:
         with open(DATA_CACHE) as f:
@@ -1759,6 +1770,7 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         hb.pack_start(self.spin)
         menu = Gio.Menu()
         menu.append("Remove unused runtimes", "win.remove-unused")
+        menu.append("Remove leftover app data", "win.remove-leftovers")
         menu.append("Automatic updates", "win.auto-updates")
         menu.append("Remotes", "win.remotes")
         menu.append("Recent changes", "win.history")
@@ -1767,6 +1779,9 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         act = Gio.SimpleAction.new("remove-unused", None)
         act.connect("activate", lambda *_: self.remove_unused())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("remove-leftovers", None)
+        act.connect("activate", lambda *_: self.remove_leftovers())
         self.add_action(act)
         act = Gio.SimpleAction.new("history", None)
         act.connect("activate", lambda *_: HistoryWindow(self).present())
@@ -2221,6 +2236,54 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
 
         dlg.connect("response", done)
         dlg.present(self)
+
+    def remove_leftovers(self):
+        if self.busy or not self.all:  # with no package list every folder would look abandoned
+            self.toast("Wait for the package list to load")
+            return
+        self.spin.start()
+        installed = {p.id for p in self.all if p.installed}
+
+        def work():
+            names, sizes = leftover_data_dirs(installed), {}
+            if names:
+                user_data_sizes(sizes)
+            GLib.idle_add(self.confirm_leftovers, names, sizes)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def confirm_leftovers(self, names, sizes):
+        self.spin_off()
+        if not names:
+            self.toast("No leftover app data")
+            return
+        lines = [f"\u2022 {n} ({GLib.format_size(sizes.get(n, 0))})" for n in names[:12]]
+        if len(names) > 12:
+            lines.append(f"\u2026and {len(names) - 12} more")
+        total = sum(sizes.get(n, 0) for n in names)
+        dlg = Adw.AlertDialog(heading="Delete leftover app data?",
+                              body=f"{plural(len(names), 'folder')} in ~/.var/app, about "
+                                   f"{GLib.format_size(total)}, from apps that are no longer installed. "
+                                   "This cannot be undone.\n" + "\n".join(lines))
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("delete", "Delete")
+        dlg.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_default_response("cancel")
+        dlg.set_close_response("cancel")
+
+        def work():
+            for n in names:
+                shutil.rmtree(os.path.expanduser(f"~/.var/app/{n}"), ignore_errors=True)
+            GLib.idle_add(self.leftovers_deleted, len(names))
+
+        dlg.connect("response", lambda _d, r: r == "delete"
+                    and threading.Thread(target=work, daemon=True).start())
+        dlg.present(self)
+
+    def leftovers_deleted(self, count):
+        self.toast(f"Deleted {plural(count, 'folder')}")
+        self.scan_data()
+        return False
 
     @staticmethod
     def entry_label():
