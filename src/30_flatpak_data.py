@@ -131,6 +131,12 @@ def list_remotes():
     return rows
 
 
+def valid_remote_location(text):
+    """A URL with a scheme, or an existing .flatpakrepo file."""
+    return bool(re.match(r"[a-z][a-z0-9+.-]*://\S+$", text)) or (
+        text.endswith(".flatpakrepo") and os.path.isfile(text))
+
+
 def enabled_remote_names(scope):
     """Names of the enabled remotes of one scope option such as --user."""
     _rc, out = flatpak("remotes", scope, "--columns=name,title,url,options")

@@ -124,6 +124,12 @@ class RemoteTests(unittest.TestCase):
             ("system", "desktop-origin", "org.kiwix.desktop.2.5.1.flatpak", "", False)])
         self.assertEqual(d.parse_remotes("", "user"), [])
 
+    def test_valid_remote_location(self):
+        for ok in ("https://dl.flathub.org/repo/flathub.flatpakrepo", "oci+https://registry.x.test", "file:///srv/repo"):
+            self.assertTrue(d.valid_remote_location(ok), ok)
+        for bad in ("", "flathub", "dl.flathub.org/repo", "/no/such/x.flatpakrepo", "https://"):
+            self.assertFalse(d.valid_remote_location(bad), bad)
+
     def test_enabled_remote_names_skips_header_and_disabled(self):
         out = ("Name\tTitle\tURL\tOptions\n"
                "flathub\tFlathub\thttps://dl.flathub.org/repo/\tuser\n"

@@ -273,6 +273,12 @@ def list_remotes():
     return rows
 
 
+def valid_remote_location(text):
+    """A URL with a scheme, or an existing .flatpakrepo file."""
+    return bool(re.match(r"[a-z][a-z0-9+.-]*://\S+$", text)) or (
+        text.endswith(".flatpakrepo") and os.path.isfile(text))
+
+
 def enabled_remote_names(scope):
     """Names of the enabled remotes of one scope option such as --user."""
     _rc, out = flatpak("remotes", scope, "--columns=name,title,url,options")
@@ -1383,7 +1389,27 @@ class RemotesWindow(Adw.Window):
         dlg.set_close_response("cancel")
 
         def check(*_):
-            dlg.set_response_enabled("add", bool(name.get_text().strip() and where.get_text().strip()))
+            dlg.set_response_enabled("add", bool(name.get_text().strip()
+                                                 and valid_remote_location(where.get_text().strip())))
+
+        def picked(fd, res):
+            try:
+                path = fd.open_finish(res).get_path()
+            except GLib.Error:
+                return
+            where.set_text(path)
+            if not name.get_text().strip():
+                name.set_text(os.path.basename(path).removesuffix(".flatpakrepo"))
+
+        def choose(*_):
+            only = Gtk.FileFilter(name="Flatpak repositories")
+            only.add_pattern("*.flatpakrepo")
+            Gtk.FileDialog(default_filter=only).open(self, None, picked)
+
+        pick = Gtk.Button(icon_name="document-open-symbolic", valign=Gtk.Align.CENTER,
+                          css_classes=["flat"], tooltip_text="Choose a .flatpakrepo file")
+        pick.connect("clicked", choose)
+        where.add_suffix(pick)
 
         def respond(_d, r):
             if r == "add":
