@@ -1771,6 +1771,7 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         menu = Gio.Menu()
         menu.append("Remove unused runtimes", "win.remove-unused")
         menu.append("Remove leftover app data", "win.remove-leftovers")
+        menu.append("Repair installation", "win.repair")
         menu.append("Automatic updates", "win.auto-updates")
         menu.append("Remotes", "win.remotes")
         menu.append("Recent changes", "win.history")
@@ -1782,6 +1783,9 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         self.add_action(act)
         act = Gio.SimpleAction.new("remove-leftovers", None)
         act.connect("activate", lambda *_: self.remove_leftovers())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("repair", None)
+        act.connect("activate", lambda *_: self.ask_repair())
         self.add_action(act)
         act = Gio.SimpleAction.new("history", None)
         act.connect("activate", lambda *_: HistoryWindow(self).present())
@@ -2235,6 +2239,22 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
                 self.run_batch(cmds, "Cleaned up unused runtimes")
 
         dlg.connect("response", done)
+        dlg.present(self)
+
+    def ask_repair(self):
+        if self.busy:
+            return
+        dlg = Adw.AlertDialog(
+            heading="Repair the user installation?",
+            body="Checks the installed files, removes broken ones and reinstalls what is missing. "
+                 "For the system installation run \u201csudo flatpak repair\u201d in a terminal.")
+        dlg.add_response("cancel", "Cancel")
+        dlg.add_response("repair", "Repair")
+        dlg.set_response_appearance("repair", Adw.ResponseAppearance.SUGGESTED)
+        dlg.set_default_response("repair")
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda _d, r: r == "repair"
+                    and self.run_batch([("repair", "--user")], "Repair finished"))
         dlg.present(self)
 
     def remove_leftovers(self):
