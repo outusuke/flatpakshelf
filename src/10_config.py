@@ -1,4 +1,6 @@
 APP_ID = "io.github.outusuke.Flatpakshelf"
+VERSION = "0.1.0"
+REPO_URL = "https://github.com/outusuke/flatpakshelf"
 CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")

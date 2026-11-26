@@ -37,6 +37,8 @@ from gi.repository import Adw, Flatpak, Gdk, Gio, GLib, GObject, Gtk, Pango  # n
 
 
 APP_ID = "io.github.outusuke.Flatpakshelf"
+VERSION = "0.1.0"
+REPO_URL = "https://github.com/outusuke/flatpakshelf"
 CACHE_DIR = os.path.join(GLib.get_user_cache_dir(), "flatpakshelf")
 CACHE_FILE = os.path.join(CACHE_DIR, "packages.json")
 DATA_CACHE = os.path.join(CACHE_DIR, "userdata.json")
@@ -1777,6 +1779,7 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         menu.append("Recent changes", "win.history")
         self.app_menu = menu
         menu.append(self.entry_label(), "win.toggle-menu-entry")
+        menu.append("About Flatpakshelf", "win.about")
         hb.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         act = Gio.SimpleAction.new("remove-unused", None)
         act.connect("activate", lambda *_: self.remove_unused())
@@ -1795,6 +1798,9 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
         self.add_action(act)
         act = Gio.SimpleAction.new("remotes", None)
         act.connect("activate", lambda *_: RemotesWindow(self).present())
+        self.add_action(act)
+        act = Gio.SimpleAction.new("about", None)
+        act.connect("activate", lambda *_: self.show_about())
         self.add_action(act)
         act = Gio.SimpleAction.new("toggle-menu-entry", None)
         act.connect("activate", lambda *_: self.toggle_menu_entry())
@@ -2312,6 +2318,12 @@ class Win(DetailsMixin, Adw.ApplicationWindow):
     def refresh_entry_label(self):
         self.app_menu.remove(3)
         self.app_menu.insert(3, self.entry_label(), "win.toggle-menu-entry")
+
+    def show_about(self):
+        Adw.AboutDialog(application_name="Flatpakshelf", application_icon=APP_ID, version=VERSION,
+                        developer_name="outusuke", developers=["outusuke"],
+                        copyright="\u00a9 2026 outusuke", license_type=Gtk.License.GPL_3_0,
+                        website=REPO_URL, issue_url=REPO_URL + "/issues").present(self)
 
     def toggle_menu_entry(self):
         adding = not os.path.exists(DESKTOP_PATH)
